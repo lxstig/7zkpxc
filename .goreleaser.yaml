@@ -1,0 +1,82 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+version: 2
+
+project_name: 7zkpxc
+
+before:
+  hooks:
+    - go mod tidy
+    - go test ./...
+    - mkdir -p completions
+    - go build -o /tmp/7zkpxc-completion-gen ./cmd/7zkpxc
+    - sh -c "/tmp/7zkpxc-completion-gen completion zsh > completions/_7zkpxc"
+    - sh -c "/tmp/7zkpxc-completion-gen completion bash > completions/7zkpxc.bash"
+    - rm -f /tmp/7zkpxc-completion-gen
+
+builds:
+  - id: 7zkpxc
+    main: ./cmd/7zkpxc
+    binary: 7zkpxc
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+
+archives:
+  - id: default
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats:
+      - tar.gz
+    files:
+      - LICENSE
+      - README.md
+      - completions/*
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+release:
+  github:
+    owner: lxstig
+    name: 7zkpxc
+  draft: false
+  prerelease: auto
+  name_template: "v{{ .Version }}"
+
+# AUR package
+aurs:
+  - name: 7zkpxc
+    homepage: https://github.com/lxstig/7zkpxc
+    description: Secure 7-Zip wrapper with KeePassXC integration
+    license: GPL-3.0
+    maintainers:
+      - "lxstig <lxst@tutamail.com>"
+    contributors:
+      - "lxstig <lxst@tutamail.com>"
+    private_key: "{{ .Env.AUR_KEY }}"
+    git_url: "ssh://aur@aur.archlinux.org/7zkpxc.git"
+    depends:
+      - p7zip
+      - keepassxc
+    package: |-
+      install -Dm755 7zkpxc "${pkgdir}/usr/bin/7zkpxc"
+      install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/7zkpxc/LICENSE"
+      install -Dm644 completions/_7zkpxc "${pkgdir}/usr/share/zsh/site-functions/_7zkpxc"

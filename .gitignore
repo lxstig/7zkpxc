@@ -1,0 +1,12 @@
+dist/
+# Binaries
+/bin/
+
+# Test Artifacts and Data
+TESTING/
+*.7z
+*.kdbx
+*.kdbx.tmp
+
+# Fake CLI output files
+/tmp/

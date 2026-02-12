@@ -1,0 +1,68 @@
+#!/bin/bash
+# Fake keepassxc-cli for testing
+# Records stdin and args to a temp file for verification
+
+OUTPUT_FILE="${FAKE_KEEPASSXC_OUTPUT:-/tmp/fake_keepassxc_output}"
+STDIN_FILE="${FAKE_KEEPASSXC_STDIN:-/tmp/fake_keepassxc_stdin}"
+
+# Record command and args
+echo "CMD: $@" >> "$OUTPUT_FILE"
+
+# Read and record stdin (only for commands that expect it)
+case "$1" in
+    "generate")
+        # generate does NOT read stdin
+        ;;
+    *)
+        while IFS= read -r line; do
+            echo "STDIN: $line" >> "$STDIN_FILE"
+        done
+        ;;
+esac
+
+# Simulate different commands
+case "$1" in
+    "show")
+        # Return a fake password
+        echo "fakepassword123"
+        exit 0
+        ;;
+    "add")
+        # Simulate successful add
+        echo "Successfully added entry"
+        exit 0
+        ;;
+    "mkdir")
+        # Simulate successful mkdir
+        exit 0
+        ;;
+    "rm")
+        # Simulate successful remove
+        echo "Successfully recycled entry"
+        exit 0
+        ;;
+    "generate")
+        # Parse -L flag for length
+        LENGTH=64
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                -L)
+                    shift
+                    LENGTH="$1"
+                    ;;
+            esac
+            shift
+        done
+        # Generate a deterministic fake password of the requested length
+        head -c "$LENGTH" < /dev/urandom | tr -dc 'a-zA-Z0-9!@#$%^&*()-_=+' | head -c "$LENGTH"
+        # If urandom filtering gave us less than LENGTH, pad with 'x'
+        RESULT=$(head -c "$LENGTH" < /dev/urandom | tr -dc 'a-zA-Z0-9!@#$%^&*()-_=+' | head -c "$LENGTH")
+        PADDED=$(printf "%-${LENGTH}s" "$RESULT" | tr ' ' 'x')
+        echo "$PADDED"
+        exit 0
+        ;;
+    *)
+        echo "Unknown command: $1" >&2
+        exit 1
+        ;;
+esac
