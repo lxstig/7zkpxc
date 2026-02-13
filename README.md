@@ -81,6 +81,20 @@ Every archive gets its own unique password. You never see it, never type it, nev
 
 ## Installation
 
+### Arch Linux (AUR)
+
+```bash
+# Using an AUR helper (recommended)
+yay -S 7zkpxc
+# or
+paru -S 7zkpxc
+
+# Manual installation
+git clone https://aur.archlinux.org/7zkpxc.git
+cd 7zkpxc
+makepkg -si
+```
+
 ### From Source
 
 ```bash
