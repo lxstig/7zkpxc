@@ -45,6 +45,11 @@ checksum:
   name_template: "checksums.txt"
   algorithm: sha256
 
+source:
+  enabled: true
+  name_template: "{{ .ProjectName }}_{{ .Version }}_src"
+  format: tar.gz
+
 changelog:
   sort: asc
   filters:
