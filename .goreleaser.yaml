@@ -71,7 +71,7 @@ aur_sources:
   - name: 7zkpxc
     homepage: https://github.com/lxstig/7zkpxc
     description: Secure 7-Zip wrapper with KeePassXC integration
-    license: GPL-3.0
+    license: GPL3
     maintainers:
       - "lxstig <lxst@tutamail.com>"
     contributors:
@@ -80,6 +80,10 @@ aur_sources:
     git_url: "ssh://aur@aur.archlinux.org/7zkpxc.git"
     makedepends:
       - go
+    depends:
+      - glibc
+      - 7zip
+      - keepassxc
     # Custom PKGBUILD content regarding build and installation
     build: |-
       export CGO_ENABLED=0
