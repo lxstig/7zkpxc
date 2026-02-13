@@ -78,7 +78,12 @@ aur_sources:
       - "lxstig <lxst@tutamail.com>"
     private_key: "{{ .Env.AUR_KEY }}"
     git_url: "ssh://aur@aur.archlinux.org/7zkpxc.git"
-    # Custom PKGBUILD content regarding installation
+    makedepends:
+      - go
+    # Custom PKGBUILD content regarding build and installation
+    build: |-
+      export CGO_ENABLED=0
+      go build -trimpath -ldflags "-s -w -X main.version={{ .Version }} -X main.commit={{ .Commit }} -X main.date={{ .Date }}" -o ./7zkpxc ./cmd/7zkpxc
     package: |-
       # Install binary
       install -Dm755 ./7zkpxc "${pkgdir}/usr/bin/7zkpxc"
