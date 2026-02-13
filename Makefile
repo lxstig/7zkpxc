@@ -13,7 +13,7 @@ LDFLAGS = -s -w \
 PREFIX     ?= /usr/local
 BINDIR     ?= $(PREFIX)/bin
 ZSH_COMP   ?= $(PREFIX)/share/zsh/site-functions
-BASH_COMP  ?= /etc/bash_completion.d
+BASH_COMP  ?= $(PREFIX)/share/bash-completion/completions
 REAL_HOME  := $(shell eval echo ~$${SUDO_USER:-$$USER})
 CONFIG_DIR ?= $(REAL_HOME)/.config/$(BINARY_NAME)
 
@@ -70,10 +70,11 @@ install:
 	@$(BUILD_DIR)/$(BINARY_NAME) completion zsh > $(ZSH_COMP)/_$(BINARY_NAME)
 	@echo "  -> zsh  $(ZSH_COMP)/_$(BINARY_NAME)"
 
-	@if [ -d $(BASH_COMP) ]; then \
-		$(BUILD_DIR)/$(BINARY_NAME) completion bash > $(BASH_COMP)/$(BINARY_NAME); \
-		echo "  -> bash $(BASH_COMP)/$(BINARY_NAME)"; \
-	fi
+
+
+	@mkdir -p $(BASH_COMP)
+	@$(BUILD_DIR)/$(BINARY_NAME) completion bash > $(BASH_COMP)/$(BINARY_NAME)
+	@echo "  -> bash $(BASH_COMP)/$(BINARY_NAME)"
 
 	@echo ""
 	@echo "Done! Restart your shell or run: hash -r"
