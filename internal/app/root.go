@@ -23,6 +23,7 @@ var rootCmd = &cobra.Command{
 using passwords generated and stored in KeePassXC.
 
 It avoids command-line password leakage by piping strict secrets to 7-Zip.`,
+	SilenceErrors: true,
 }
 
 // Execute adds all child commands to the root command and sets flags appropriately.

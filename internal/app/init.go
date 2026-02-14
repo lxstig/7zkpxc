@@ -22,9 +22,11 @@ and other preferences for 7zkpxc.
 
 Supports Tab completion for file and directory paths.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		cmd.SilenceUsage = true
 		return runInit()
 	},
-	GroupID: "setup",
+	GroupID:               "setup",
+	DisableFlagsInUseLine: true,
 }
 
 func init() {
@@ -129,7 +131,8 @@ func kdbxFilter(path string, isDir bool) bool {
 func runInit() error {
 	cfg := &config.Config{
 		General: config.GeneralConfig{
-			UseKeyring: true,
+			UseKeyring:     true,
+			PasswordLength: config.PasswordLengthDefault,
 		},
 		SevenZip: config.SevenZipConfig{
 			DefaultArgs: []string{"-mhe=on", "-mx=9"},
@@ -163,8 +166,8 @@ func runInit() error {
 	}
 	cfg.General.DefaultGroup = group
 
-	// --- Step 3: Save ---
-	if err := config.SaveConfig(cfg); err != nil {
+	// --- Step 3: Save with Comments ---
+	if err := saveConfigWithComments(cfg); err != nil {
 		return fmt.Errorf("error saving config: %w", err)
 	}
 
@@ -259,7 +262,6 @@ func promptGroup() (string, error) {
 	return group, nil
 }
 
-// expandAndResolve expands ~ and returns an absolute path.
 func expandAndResolve(path string) string {
 	if strings.HasPrefix(path, "~/") || path == "~" {
 		home, err := os.UserHomeDir()
@@ -277,4 +279,46 @@ func expandAndResolve(path string) string {
 		return path
 	}
 	return abs
+}
+
+func saveConfigWithComments(cfg *config.Config) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	configDir := filepath.Join(home, ".config", "7zkpxc")
+	if err := os.MkdirAll(configDir, 0755); err != nil {
+		return err
+	}
+
+	content := fmt.Sprintf(`general:
+  kdbx_path: "%s"
+  default_group: "%s"
+  use_keyring: %t
+  # generated password length (min: %d, max: %d)
+  password_length: %d
+sevenzip:
+  binary_path: "%s"
+  default_args: [%s]
+`,
+		cfg.General.KdbxPath,
+		cfg.General.DefaultGroup,
+		cfg.General.UseKeyring,
+		config.PasswordLengthMin,
+		config.PasswordLengthMax,
+		cfg.General.PasswordLength,
+		cfg.SevenZip.BinaryPath,
+		formatStringSlice(cfg.SevenZip.DefaultArgs),
+	)
+
+	configPath := filepath.Join(configDir, "config.yaml")
+	return os.WriteFile(configPath, []byte(content), 0644)
+}
+
+func formatStringSlice(s []string) string {
+	var quoted []string
+	for _, v := range s {
+		quoted = append(quoted, fmt.Sprintf("%q", v))
+	}
+	return strings.Join(quoted, ", ")
 }

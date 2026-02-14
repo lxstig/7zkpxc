@@ -65,15 +65,18 @@ func LoadConfig() (*Config, error) {
 
 	var cfg Config
 	if err := viper.Unmarshal(&cfg); err != nil {
-		return nil, fmt.Errorf("unable to decode config into struct: %w", err)
+		return nil, fmt.Errorf("decoding failed due to the following error(s):\n\n%w", err)
 	}
 
-	// Clamp password length to valid range
-	if cfg.General.PasswordLength < PasswordLengthMin {
-		cfg.General.PasswordLength = PasswordLengthMin
+	// Handle default
+	if cfg.General.PasswordLength == 0 {
+		cfg.General.PasswordLength = PasswordLengthDefault
 	}
-	if cfg.General.PasswordLength > PasswordLengthMax {
-		cfg.General.PasswordLength = PasswordLengthMax
+
+	// Validate range
+	if cfg.General.PasswordLength < PasswordLengthMin || cfg.General.PasswordLength > PasswordLengthMax {
+		return nil, fmt.Errorf("invalid password_length: %d (must be between %d and %d)",
+			cfg.General.PasswordLength, PasswordLengthMin, PasswordLengthMax)
 	}
 
 	return &cfg, nil

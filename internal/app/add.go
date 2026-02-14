@@ -38,6 +38,7 @@ func init() {
 }
 
 func runAdd(cmd *cobra.Command, args []string) error {
+	cmd.SilenceUsage = true
 	archiveName := args[0]
 	var files []string
 

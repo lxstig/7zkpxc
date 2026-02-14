@@ -22,6 +22,7 @@ func init() {
 }
 
 func runList(cmd *cobra.Command, args []string) error {
+	cmd.SilenceUsage = true
 	archivePath := args[0]
 
 	cfg, err := config.LoadConfig()

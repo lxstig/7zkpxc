@@ -136,7 +136,9 @@ func TestSaveAndLoad_RoundTrip(t *testing.T) {
 	}
 }
 
-func TestPasswordLength_ClampMin(t *testing.T) {
+
+
+func TestPasswordLength_InvalidMin(t *testing.T) {
 	resetViper(t)
 
 	tmpHome := t.TempDir()
@@ -159,17 +161,13 @@ func TestPasswordLength_ClampMin(t *testing.T) {
 
 	resetViper(t)
 
-	loaded, err := LoadConfig()
-	if err != nil {
-		t.Fatalf("LoadConfig() failed: %v", err)
-	}
-
-	if loaded.General.PasswordLength != PasswordLengthMin {
-		t.Errorf("PasswordLength = %d, want clamped to min %d", loaded.General.PasswordLength, PasswordLengthMin)
+	_, err := LoadConfig()
+	if err == nil {
+		t.Fatal("LoadConfig() should fail for PasswordLength < 32")
 	}
 }
 
-func TestPasswordLength_ClampMax(t *testing.T) {
+func TestPasswordLength_InvalidMax(t *testing.T) {
 	resetViper(t)
 
 	tmpHome := t.TempDir()
@@ -192,13 +190,9 @@ func TestPasswordLength_ClampMax(t *testing.T) {
 
 	resetViper(t)
 
-	loaded, err := LoadConfig()
-	if err != nil {
-		t.Fatalf("LoadConfig() failed: %v", err)
-	}
-
-	if loaded.General.PasswordLength != PasswordLengthMax {
-		t.Errorf("PasswordLength = %d, want clamped to max %d", loaded.General.PasswordLength, PasswordLengthMax)
+	_, err := LoadConfig()
+	if err == nil {
+		t.Fatal("LoadConfig() should fail for PasswordLength > 128")
 	}
 }
 
@@ -274,9 +268,9 @@ func TestPasswordLength_ZeroDefaultsToConfigDefault(t *testing.T) {
 		t.Fatalf("LoadConfig() failed: %v", err)
 	}
 
-	// 0 is below minimum, so it should be clamped to PasswordLengthMin
-	if loaded.General.PasswordLength != PasswordLengthMin {
-		t.Errorf("PasswordLength = %d, want %d (clamped from 0)", loaded.General.PasswordLength, PasswordLengthMin)
+	// 0 is default, so it should be set to PasswordLengthDefault
+	if loaded.General.PasswordLength != PasswordLengthDefault {
+		t.Errorf("PasswordLength = %d, want %d (default from 0)", loaded.General.PasswordLength, PasswordLengthDefault)
 	}
 }
 

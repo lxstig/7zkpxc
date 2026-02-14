@@ -32,8 +32,7 @@ func Run(password string, args []string) error {
 		defer close(done)
 
 		buf := make([]byte, 1024)
-		passwordSendCount := 0
-		suppressNextLine := false
+		suppressUntilNewline := false
 
 		for {
 			n, err := ptmx.Read(buf)
@@ -42,10 +41,10 @@ func Run(password string, args []string) error {
 				lowerChunk := bytes.ToLower(chunk)
 
 				// Detect password prompt (handles both "Enter password" and "Reenter password")
-				if bytes.Contains(lowerChunk, []byte("enter password")) ||
-					bytes.Contains(lowerChunk, []byte("password:")) {
+				if !suppressUntilNewline && (bytes.Contains(lowerChunk, []byte("enter password")) ||
+					bytes.Contains(lowerChunk, []byte("password:"))) {
 
-					// Echo prompt to stdout (but not password)
+					// Echo prompt to stdout
 					_, _ = os.Stdout.Write(chunk)
 
 					// Small delay to ensure prompt is flushed
@@ -53,27 +52,27 @@ func Run(password string, args []string) error {
 
 					// Write password + newline
 					_, _ = ptmx.Write([]byte(password + "\n"))
-					passwordSendCount++
-					suppressNextLine = true // Don't echo the password line
+					suppressUntilNewline = true // Start suppressing echo
 					continue
 				}
 
-				// Suppress echo of password (if terminal echoes it back)
-				if suppressNextLine {
-					// Check if this chunk contains the password (could be echoed)
-					if bytes.Contains(chunk, []byte(password)) {
-						suppressNextLine = false
-						continue
+				if suppressUntilNewline {
+					// Search for newline which marks end of password echo
+					nlIdx := bytes.IndexAny(chunk, "\n\r")
+					if nlIdx != -1 {
+						// Found newline!
+						suppressUntilNewline = false
+
+						// If there is content AFTER the newline, print it
+						if nlIdx+1 < len(chunk) {
+							_, _ = os.Stdout.Write(chunk[nlIdx+1:])
+						}
 					}
-					// If chunk is just whitespace/newline, skip
-					if bytes.Equal(bytes.TrimSpace(chunk), []byte{}) {
-						suppressNextLine = false
-						continue
-					}
-					suppressNextLine = false
+					// If no newline, we suppress the entire chunk (it's part of the password echo)
+					continue
 				}
 
-				// Echo to stdout for user visibility
+				// Normal output
 				_, _ = os.Stdout.Write(chunk)
 			}
 
@@ -85,8 +84,6 @@ func Run(password string, args []string) error {
 				break
 			}
 		}
-
-		_ = passwordSendCount // available for future diagnostics
 	}()
 
 	// We block here until process exit
