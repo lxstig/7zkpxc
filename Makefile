@@ -14,6 +14,7 @@ PREFIX     ?= /usr/local
 BINDIR     ?= $(PREFIX)/bin
 ZSH_COMP   ?= $(PREFIX)/share/zsh/site-functions
 BASH_COMP  ?= $(PREFIX)/share/bash-completion/completions
+FISH_COMP  ?= $(PREFIX)/share/fish/vendor_completions.d
 REAL_HOME  := $(shell eval echo ~$${SUDO_USER:-$$USER})
 CONFIG_DIR ?= $(REAL_HOME)/.config/$(BINARY_NAME)
 
@@ -45,6 +46,7 @@ completion: build
 	@mkdir -p completions
 	@./$(BUILD_DIR)/$(BINARY_NAME) completion zsh  > completions/_$(BINARY_NAME)
 	@./$(BUILD_DIR)/$(BINARY_NAME) completion bash > completions/$(BINARY_NAME).bash
+	@./$(BUILD_DIR)/$(BINARY_NAME) completion fish > completions/$(BINARY_NAME).fish
 	@echo "Completions generated in completions/"
 
 # ---------- System-wide install ----------
@@ -76,6 +78,10 @@ install:
 	@$(BUILD_DIR)/$(BINARY_NAME) completion bash > $(BASH_COMP)/$(BINARY_NAME)
 	@echo "  -> bash $(BASH_COMP)/$(BINARY_NAME)"
 
+	@mkdir -p $(FISH_COMP)
+	@$(BUILD_DIR)/$(BINARY_NAME) completion fish > $(FISH_COMP)/$(BINARY_NAME).fish
+	@echo "  -> fish $(FISH_COMP)/$(BINARY_NAME).fish"
+
 	@echo ""
 	@echo "Done! Restart your shell or run: hash -r"
 
@@ -85,6 +91,7 @@ uninstall:
 	@rm -f $(BINDIR)/$(BINARY_NAME)
 	@rm -f $(ZSH_COMP)/_$(BINARY_NAME)
 	@rm -f $(BASH_COMP)/$(BINARY_NAME)
+	@rm -f $(FISH_COMP)/$(BINARY_NAME).fish
 	@echo "Uninstalled (config left in $(CONFIG_DIR))."
 
 # Remove everything: binary + completions + config

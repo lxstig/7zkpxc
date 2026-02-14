@@ -11,6 +11,7 @@ before:
     - go build -o /tmp/7zkpxc-completion-gen ./cmd/7zkpxc
     - sh -c "/tmp/7zkpxc-completion-gen completion zsh > completions/_7zkpxc"
     - sh -c "/tmp/7zkpxc-completion-gen completion bash > completions/7zkpxc.bash"
+    - sh -c "/tmp/7zkpxc-completion-gen completion fish > completions/7zkpxc.fish"
     - rm -f /tmp/7zkpxc-completion-gen
 
 builds:
@@ -99,6 +100,8 @@ aur_sources:
       mkdir -p completions
       ./7zkpxc completion zsh > completions/_7zkpxc
       ./7zkpxc completion bash > completions/7zkpxc.bash
+      ./7zkpxc completion fish > completions/7zkpxc.fish
       
       install -Dm644 completions/_7zkpxc "${pkgdir}/usr/share/zsh/site-functions/_7zkpxc"
       install -Dm644 completions/7zkpxc.bash "${pkgdir}/usr/share/bash-completion/completions/7zkpxc"
+      install -Dm644 completions/7zkpxc.fish "${pkgdir}/usr/share/fish/vendor_completions.d/7zkpxc.fish"

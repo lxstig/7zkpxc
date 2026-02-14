@@ -52,7 +52,7 @@ Every archive gets its own unique password. You never see it, never type it, nev
 - **Cloud-ready** Encrypt locally, upload anywhere. Only you (with your KeePassXC database) can decrypt.
 - **Dependency checking** Tells you exactly what's missing before doing anything.
 - **Tab-completing init** Interactive setup with real filesystem tab completion.
-- **Shell completions** Native Zsh and Bash autocomplete.
+- **Shell completions** Native Zsh, Bash, and Fish autocomplete.
 
 ## Security Model
 
