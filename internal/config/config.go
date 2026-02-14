@@ -65,7 +65,7 @@ func LoadConfig() (*Config, error) {
 
 	var cfg Config
 	if err := viper.Unmarshal(&cfg); err != nil {
-		return nil, fmt.Errorf("decoding failed due to the following error(s):\n\n%w", err)
+		return nil, fmt.Errorf("config parse error: %w", err)
 	}
 
 	// Handle default
