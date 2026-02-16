@@ -76,7 +76,7 @@ Every archive gets its own unique password. You never see it, never type it, nev
 
 | Dependency | What it does | Install |
 |-----------|-------------|---------|
-| [**7-Zip**](https://7-zip.org/) (`7z`) | Creates and extracts encrypted archives | Arch: `pacman -S 7zip`<br>Debian/Ubuntu: `apt install p7zip-full` |
+| [**7-Zip**](https://7-zip.org/) (`7z`) | Creates and extracts encrypted archives | Arch: `sudo pacman -S 7zip`<br>Debian/Ubuntu: `sudo apt install p7zip-full` |
 | [**KeePassXC**](https://keepassxc.org/) (`keepassxc-cli`) | Stores and retrieves archive passwords | Arch: `pacman -S keepassxc`<br>Debian/Ubuntu: `apt install keepassxc` |
 
 ## Installation
