@@ -1,7 +1,7 @@
 # 7zkpxc
 
 [![CI](https://github.com/lxstig/7zkpxc/actions/workflows/ci.yml/badge.svg)](https://github.com/lxstig/7zkpxc/actions/workflows/ci.yml)
-
+[![Go Report Card](https://goreportcard.com/badge/github.com/lxstig/7zkpxc)](https://goreportcard.com/report/github.com/lxstig/7zkpxc)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 
 **7zkpxc** is a security-focused CLI tool that bridges [7-Zip](https://7-zip.org/) and [KeePassXC](https://keepassxc.org/). It generates a unique, cryptographically strong password for every archive you create, securely stores it in your KeePassXC database and automatically retrieves it when you need to extract/list the archive, all without the password ever touching your shell history, process list, or clipboard.
