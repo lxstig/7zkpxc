@@ -7,26 +7,26 @@ import (
 
 // MockPasswordProvider for testing
 type MockPasswordProvider struct {
-	passwords map[string]string
+	passwords map[string][]byte
 	calls     []string
 }
 
 func NewMockPasswordProvider() *MockPasswordProvider {
 	return &MockPasswordProvider{
-		passwords: make(map[string]string),
+		passwords: make(map[string][]byte),
 		calls:     make([]string, 0),
 	}
 }
 
-func (m *MockPasswordProvider) GetPassword(key string) (string, error) {
+func (m *MockPasswordProvider) GetPassword(key string) ([]byte, error) {
 	m.calls = append(m.calls, key)
 	if pass, ok := m.passwords[key]; ok {
 		return pass, nil
 	}
-	return "", errors.New("not found")
+	return nil, errors.New("not found")
 }
 
-func (m *MockPasswordProvider) SetPassword(key, password string) {
+func (m *MockPasswordProvider) SetPassword(key string, password []byte) {
 	m.passwords[key] = password
 }
 
@@ -145,7 +145,7 @@ func TestGetPasswordForArchive(t *testing.T) {
 		archivePath  string
 		prefix       string
 		setupMock    func(*MockPasswordProvider)
-		wantPassword string
+		wantPassword []byte
 		wantError    bool
 		wantCalls    []string
 	}{
@@ -154,9 +154,9 @@ func TestGetPasswordForArchive(t *testing.T) {
 			archivePath: "archive.7z",
 			prefix:      "backups",
 			setupMock: func(m *MockPasswordProvider) {
-				m.SetPassword("backups/archive.7z", "secret123")
+				m.SetPassword("backups/archive.7z", []byte("secret123"))
 			},
-			wantPassword: "secret123",
+			wantPassword: []byte("secret123"),
 			wantError:    false,
 			wantCalls:    []string{"backups/archive.7z"},
 		},
@@ -165,9 +165,9 @@ func TestGetPasswordForArchive(t *testing.T) {
 			archivePath: "archive.7z.001",
 			prefix:      "backups",
 			setupMock: func(m *MockPasswordProvider) {
-				m.SetPassword("backups/archive.7z", "split_pass")
+				m.SetPassword("backups/archive.7z", []byte("split_pass"))
 			},
-			wantPassword: "split_pass",
+			wantPassword: []byte("split_pass"),
 			wantError:    false,
 			wantCalls:    []string{"backups/archive.7z"},
 		},
@@ -176,9 +176,9 @@ func TestGetPasswordForArchive(t *testing.T) {
 			archivePath: "archive.7z.001",
 			prefix:      "backups",
 			setupMock: func(m *MockPasswordProvider) {
-				m.SetPassword("backups/archive.7z.001", "original_pass")
+				m.SetPassword("backups/archive.7z.001", []byte("original_pass"))
 			},
-			wantPassword: "original_pass",
+			wantPassword: []byte("original_pass"),
 			wantError:    false,
 			wantCalls:    []string{"backups/archive.7z", "backups/archive.7z.001"},
 		},
@@ -187,9 +187,9 @@ func TestGetPasswordForArchive(t *testing.T) {
 			archivePath: "backup.part001.rar",
 			prefix:      "archives",
 			setupMock: func(m *MockPasswordProvider) {
-				m.SetPassword("archives/backup.rar", "rar_pass")
+				m.SetPassword("archives/backup.rar", []byte("rar_pass"))
 			},
-			wantPassword: "rar_pass",
+			wantPassword: []byte("rar_pass"),
 			wantError:    false,
 			wantCalls:    []string{"archives/backup.rar"},
 		},
@@ -198,9 +198,9 @@ func TestGetPasswordForArchive(t *testing.T) {
 			archivePath: "data.r00",
 			prefix:      "archives",
 			setupMock: func(m *MockPasswordProvider) {
-				m.SetPassword("archives/data.rar", "old_rar_pass")
+				m.SetPassword("archives/data.rar", []byte("old_rar_pass"))
 			},
-			wantPassword: "old_rar_pass",
+			wantPassword: []byte("old_rar_pass"),
 			wantError:    false,
 			wantCalls:    []string{"archives/data.rar"},
 		},
@@ -209,9 +209,9 @@ func TestGetPasswordForArchive(t *testing.T) {
 			archivePath: "backup.2024",
 			prefix:      "yearly",
 			setupMock: func(m *MockPasswordProvider) {
-				m.SetPassword("yearly/backup.2024", "year_pass")
+				m.SetPassword("yearly/backup.2024", []byte("year_pass"))
 			},
-			wantPassword: "year_pass",
+			wantPassword: []byte("year_pass"),
 			wantError:    false,
 			wantCalls:    []string{"yearly/backup.2024"},
 		},
@@ -220,9 +220,9 @@ func TestGetPasswordForArchive(t *testing.T) {
 			archivePath: "archive.7z.001",
 			prefix:      "backups",
 			setupMock: func(m *MockPasswordProvider) {
-				m.SetPassword("backups/archive", "base_pass")
+				m.SetPassword("backups/archive", []byte("base_pass"))
 			},
-			wantPassword: "base_pass",
+			wantPassword: []byte("base_pass"),
 			wantError:    false,
 			wantCalls:    []string{"backups/archive.7z", "backups/archive.7z.001", "backups/archive"},
 		},
@@ -239,9 +239,9 @@ func TestGetPasswordForArchive(t *testing.T) {
 			archivePath: "file.zip",
 			prefix:      "",
 			setupMock: func(m *MockPasswordProvider) {
-				m.SetPassword("file.zip", "no_prefix")
+				m.SetPassword("file.zip", []byte("no_prefix"))
 			},
-			wantPassword: "no_prefix",
+			wantPassword: []byte("no_prefix"),
 			wantError:    false,
 			wantCalls:    []string{"file.zip"},
 		},
@@ -250,9 +250,9 @@ func TestGetPasswordForArchive(t *testing.T) {
 			archivePath: "ARCHIVE.7Z.001",
 			prefix:      "backups",
 			setupMock: func(m *MockPasswordProvider) {
-				m.SetPassword("backups/ARCHIVE.7Z", "upper_pass")
+				m.SetPassword("backups/ARCHIVE.7Z", []byte("upper_pass"))
 			},
-			wantPassword: "upper_pass",
+			wantPassword: []byte("upper_pass"),
 			wantError:    false,
 			wantCalls:    []string{"backups/ARCHIVE.7Z"},
 		},
@@ -276,7 +276,7 @@ func TestGetPasswordForArchive(t *testing.T) {
 				if err != nil {
 					t.Errorf("Unexpected error: %v", err)
 				}
-				if password != tt.wantPassword {
+				if string(password) != string(tt.wantPassword) {
 					t.Errorf("Password = %q, want %q", password, tt.wantPassword)
 				}
 			}
@@ -351,7 +351,7 @@ func BenchmarkNormalizeArchiveName(b *testing.B) {
 
 func BenchmarkGetPasswordForArchive(b *testing.B) {
 	mock := NewMockPasswordProvider()
-	mock.SetPassword("backups/archive.7z", "password")
+	mock.SetPassword("backups/archive.7z", []byte("password"))
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

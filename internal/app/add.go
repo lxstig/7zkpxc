@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -71,7 +72,7 @@ func runAdd(cmd *cobra.Command, args []string) error {
 
 	err = kp.AddEntry(
 		cfg.General.DefaultGroup,
-		archiveName,
+		filepath.Base(archiveName),
 		password,
 		absArchivePath,
 	)
@@ -105,8 +106,16 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	// Separate positional files from pass-through 7z flags (starting with "-")
 	// Users can pass raw 7z flags after -- or inline (e.g. `7zkpxc a archive files -sfx`)
 	for _, arg := range args[1:] {
+		// Only treat as flag if it starts with "-" AND is not a real file
 		if strings.HasPrefix(arg, "-") {
-			sevenZipArgs = append(sevenZipArgs, arg)
+			// Check if file actually exists
+			if _, err := os.Stat(arg); err == nil {
+				// Due to security risks and 7z parsing inconsistencies, we explicitly forbid archiving files
+				// that start with a dash.
+				return fmt.Errorf("security policy: archiving files starting with '-' is not supported to prevent parameter injection: %s", arg)
+			} else {
+				sevenZipArgs = append(sevenZipArgs, arg)
+			}
 		} else {
 			files = append(files, arg)
 		}
@@ -118,5 +127,12 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	sevenZipArgs = append(sevenZipArgs, archiveName)
 	sevenZipArgs = append(sevenZipArgs, files...)
 
-	return sevenzip.Run(password, sevenZipArgs)
+	err = sevenzip.Run(password, sevenZipArgs)
+
+	// Zero out the password copy
+	for i := range password {
+		password[i] = 0
+	}
+
+	return err
 }

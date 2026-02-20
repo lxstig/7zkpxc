@@ -46,7 +46,7 @@ func TestGetMasterPassword(t *testing.T) {
 		masterPassword: []byte("testpass"),
 	}
 
-	got := c.getMasterPassword()
+	got := string(c.getMasterPassword())
 	if got != "testpass" {
 		t.Errorf("getMasterPassword() = %q, want %q", got, "testpass")
 	}
@@ -96,7 +96,7 @@ func TestGeneratePassword_Lengths(t *testing.T) {
 				t.Errorf("len = %d, want %d", len(pw), tt.length)
 			}
 
-			if pw == "" {
+			if len(pw) == 0 {
 				t.Error("password is empty")
 			}
 		})
@@ -116,9 +116,9 @@ func TestGeneratePassword_Uniqueness(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GeneratePassword failed on iteration %d: %v", i, err)
 		}
-		if _, exists := passwords[pw]; exists {
+		if _, exists := passwords[string(pw)]; exists {
 			t.Fatalf("duplicate password generated on iteration %d", i)
 		}
-		passwords[pw] = struct{}{}
+		passwords[string(pw)] = struct{}{}
 	}
 }

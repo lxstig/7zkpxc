@@ -57,6 +57,11 @@ func runExtract(cmd *cobra.Command, args []string) error {
 	}
 
 	err = sevenzip.Run(password, sevenZipArgs)
+
+	for i := range password {
+		password[i] = 0
+	}
+
 	if err != nil {
 		return fmt.Errorf("extraction failed: %w", err)
 	}

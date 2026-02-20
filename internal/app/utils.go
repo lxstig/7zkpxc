@@ -116,13 +116,13 @@ func joinEntry(prefix, name string) string {
 //  3. For split archives, try additional variants
 //
 // Returns the password if found, or an error with details about what was tried.
-func GetPasswordForArchive(kp PasswordProvider, entryPathPrefix, archivePath string) (string, error) {
+func GetPasswordForArchive(kp PasswordProvider, entryPathPrefix, archivePath string) ([]byte, error) {
 	if kp == nil {
-		return "", fmt.Errorf("password provider is nil")
+		return nil, fmt.Errorf("password provider is nil")
 	}
 
 	if archivePath == "" {
-		return "", fmt.Errorf("archive path is empty")
+		return nil, fmt.Errorf("archive path is empty")
 	}
 
 	info := AnalyzeArchive(archivePath)
@@ -157,7 +157,7 @@ func GetPasswordForArchive(kp PasswordProvider, entryPathPrefix, archivePath str
 		}
 	}
 
-	return "", &PasswordNotFoundError{
+	return nil, &PasswordNotFoundError{
 		ArchiveName: info.OriginalName,
 		Tried:       tried,
 	}
@@ -165,7 +165,7 @@ func GetPasswordForArchive(kp PasswordProvider, entryPathPrefix, archivePath str
 
 // PasswordProvider is an interface for password retrieval
 type PasswordProvider interface {
-	GetPassword(key string) (string, error)
+	GetPassword(key string) ([]byte, error)
 }
 
 // PasswordNotFoundError is returned when no password can be found for an archive

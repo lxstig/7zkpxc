@@ -50,7 +50,7 @@ func TestGetPassword_WithFakeCLI(t *testing.T) {
 	}
 
 	// Verify password returned
-	if password != "fakepassword123" {
+	if string(password) != "fakepassword123" {
 		t.Errorf("GetPassword = %q, want %q", password, "fakepassword123")
 	}
 
@@ -110,7 +110,7 @@ func TestAddEntry_PasswordNotInArgs(t *testing.T) {
 
 	// This will fail because Exists() will try to show first
 	// But we can verify the password handling principle
-	_ = client.AddEntry("TestGroup", "TestEntry", "archivepassword", "/path/to/archive")
+	_ = client.AddEntry("TestGroup", "TestEntry", []byte("archivepassword"), "/path/to/archive")
 
 	// Verify archive password not in command line
 	cmdContent, err := os.ReadFile(outputFile)

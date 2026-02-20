@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -32,15 +33,16 @@ func (c *Client) Close() {
 	c.masterPassword = nil
 }
 
-// getMasterPassword returns the password as string for CLI usage
-func (c *Client) getMasterPassword() string {
-	return string(c.masterPassword)
+// getMasterPassword returns the master password.
+// Be very careful when using this to avoid creating string copies that linger in memory.
+func (c *Client) getMasterPassword() []byte {
+	return c.masterPassword
 }
 
 // GeneratePassword creates a secure random password using keepassxc-cli generate.
 // This delegates all cryptographic work to KeePassXC's audited generator.
 // Flags: -L length, -l lowercase, -U uppercase, -n numbers, -s special characters.
-func (c *Client) GeneratePassword(length int) (string, error) {
+func (c *Client) GeneratePassword(length int) ([]byte, error) {
 	cmd := exec.Command("keepassxc-cli", "generate",
 		"-L", strconv.Itoa(length),
 		"-l", "-U", "-n", "-s",
@@ -51,15 +53,25 @@ func (c *Client) GeneratePassword(length int) (string, error) {
 	cmd.Stderr = &errBuf
 
 	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("keepassxc-cli generate failed: %w: %s", err, errBuf.String())
+		return nil, fmt.Errorf("keepassxc-cli generate failed: %w: %s", err, errBuf.String())
 	}
 
-	password := strings.TrimSpace(outBuf.String())
-	if password == "" {
-		return "", fmt.Errorf("keepassxc-cli generate returned empty password")
+	password := bytes.TrimSpace(outBuf.Bytes())
+	if len(password) == 0 {
+		return nil, fmt.Errorf("keepassxc-cli generate returned empty password")
 	}
 
-	return password, nil
+	// Create a copy to own the memory cleanly, so we can zero it later
+	passCopy := make([]byte, len(password))
+	copy(passCopy, password)
+
+	// Best effort to zero out the buffer from `outBuf`
+	outBytes := outBuf.Bytes()
+	for i := range outBytes {
+		outBytes[i] = 0
+	}
+
+	return passCopy, nil
 }
 
 // EnsureUnlocked prompts for master password if not set
@@ -111,10 +123,18 @@ func (c *Client) Mkdir(groupPath string) error {
 			return err
 		}
 
-		_, _ = fmt.Fprintf(stdin, "%s\n", c.getMasterPassword())
+		_, _ = stdin.Write(c.getMasterPassword())
+		_, _ = stdin.Write([]byte("\n"))
 		_ = stdin.Close()
 
-		_ = cmd.Wait()
+		err = cmd.Wait()
+		if err != nil {
+			errStr := outBuf.String()
+			// Ignore "already exists" errors, but bubble up auth/other errors
+			if !strings.Contains(errStr, "already exists") {
+				return fmt.Errorf("keepassxc-cli mkdir failed: %s: %s", err, errStr)
+			}
+		}
 	}
 	return nil
 }
@@ -125,7 +145,13 @@ func (c *Client) Exists(path string) bool {
 		return false
 	}
 
+	// Clean path to prevent double slashes //
+	path = filepath.ToSlash(filepath.Clean(path))
+
 	cmd := exec.Command("keepassxc-cli", "show", "-q", c.DatabasePath, path)
+
+	var outBuf bytes.Buffer
+	cmd.Stderr = &outBuf
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -136,7 +162,8 @@ func (c *Client) Exists(path string) bool {
 		return false
 	}
 
-	_, _ = fmt.Fprintf(stdin, "%s\n", c.getMasterPassword())
+	_, _ = stdin.Write(c.getMasterPassword())
+	_, _ = stdin.Write([]byte("\n"))
 	_ = stdin.Close()
 
 	if err := cmd.Wait(); err != nil {
@@ -146,7 +173,7 @@ func (c *Client) Exists(path string) bool {
 }
 
 // AddEntry adds a new entry to KeePassXC
-func (c *Client) AddEntry(group, title, password, specificUrl string) error {
+func (c *Client) AddEntry(group, title string, password []byte, specificUrl string) error {
 	if err := c.EnsureUnlocked(); err != nil {
 		return err
 	}
@@ -158,6 +185,10 @@ func (c *Client) AddEntry(group, title, password, specificUrl string) error {
 		fullPath += "/"
 	}
 	fullPath += title
+
+	// Clean path to prevent double slashes like 'Group//tmp/archive.7z'
+	// keepassxc uses forward slashes for dirs
+	fullPath = filepath.ToSlash(filepath.Clean(fullPath))
 
 	// Check existence before add to avoid messy errors
 	if c.Exists(fullPath) {
@@ -183,9 +214,12 @@ func (c *Client) AddEntry(group, title, password, specificUrl string) error {
 		return err
 	}
 
-	_, _ = fmt.Fprintf(stdin, "%s\n", c.getMasterPassword())
-	_, _ = fmt.Fprintf(stdin, "%s\n", password)
-	_, _ = fmt.Fprintf(stdin, "%s\n", password)
+	_, _ = stdin.Write(c.getMasterPassword())
+	_, _ = stdin.Write([]byte("\n"))
+	_, _ = stdin.Write(password)
+	_, _ = stdin.Write([]byte("\n"))
+	_, _ = stdin.Write(password)
+	_, _ = stdin.Write([]byte("\n"))
 
 	_ = stdin.Close()
 
@@ -217,7 +251,8 @@ func (c *Client) DeleteEntry(entryPath string) error {
 		return err
 	}
 
-	_, _ = fmt.Fprintf(stdin, "%s\n", c.getMasterPassword())
+	_, _ = stdin.Write(c.getMasterPassword())
+	_, _ = stdin.Write([]byte("\n"))
 	_ = stdin.Close()
 
 	if err := cmd.Wait(); err != nil {
@@ -228,9 +263,9 @@ func (c *Client) DeleteEntry(entryPath string) error {
 }
 
 // GetPassword retrieves a password for an entry
-func (c *Client) GetPassword(entryPath string) (string, error) {
+func (c *Client) GetPassword(entryPath string) ([]byte, error) {
 	if err := c.EnsureUnlocked(); err != nil {
-		return "", err
+		return nil, err
 	}
 
 	cmd := exec.Command("keepassxc-cli", "show", "-s", "-a", "password", "-q", c.DatabasePath, entryPath)
@@ -241,19 +276,32 @@ func (c *Client) GetPassword(entryPath string) (string, error) {
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
 	if err := cmd.Start(); err != nil {
-		return "", err
+		return nil, err
 	}
 
-	_, _ = fmt.Fprintf(stdin, "%s\n", c.getMasterPassword())
+	_, _ = stdin.Write(c.getMasterPassword())
+	_, _ = stdin.Write([]byte("\n"))
 	_ = stdin.Close()
 
 	if err := cmd.Wait(); err != nil {
-		return "", fmt.Errorf("failed to get password: %w", err)
+		return nil, fmt.Errorf("failed to get password: %w", err)
 	}
 
-	return strings.TrimSpace(outBuf.String()), nil
+	password := bytes.TrimSpace(outBuf.Bytes())
+
+	// Create copy to own memory
+	passCopy := make([]byte, len(password))
+	copy(passCopy, password)
+
+	// Zero out the buffer
+	outBytes := outBuf.Bytes()
+	for i := range outBytes {
+		outBytes[i] = 0
+	}
+
+	return passCopy, nil
 }

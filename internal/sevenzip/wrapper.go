@@ -13,7 +13,7 @@ import (
 // Run executes a 7z command with secure password input via PTY.
 // This function is used for all 7z operations (a, x, l) that require password.
 // It handles both single password prompts (extract/list) and double prompts (create/add).
-func Run(password string, args []string) error {
+func Run(password []byte, args []string) error {
 	cmd := exec.Command("7z", args...)
 
 	// Force English locale to detect prompt reliably
@@ -51,7 +51,8 @@ func Run(password string, args []string) error {
 					time.Sleep(10 * time.Millisecond)
 
 					// Write password + newline
-					_, _ = ptmx.Write([]byte(password + "\n"))
+					_, _ = ptmx.Write(password)
+					_, _ = ptmx.Write([]byte("\n"))
 					suppressUntilNewline = true // Start suppressing echo
 					continue
 				}

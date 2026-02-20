@@ -23,7 +23,7 @@ func TestRun_InvalidCommand(t *testing.T) {
 	}
 
 	// Run with invalid args - should fail
-	err = Run("testpassword", []string{"invalidcmd"})
+	err = Run([]byte("testpassword"), []string{"invalidcmd"})
 	if err == nil {
 		t.Error("Expected error for invalid 7z command, got nil")
 	}
@@ -71,7 +71,7 @@ func TestRun_EncryptionDecryption(t *testing.T) {
 	sourceFile := filepath.Join(tmpDir, "secret.txt")
 	archiveFile := filepath.Join(tmpDir, "secret.7z")
 	extractDir := filepath.Join(tmpDir, "extracted")
-	password := "SecretPass123!"
+	password := []byte("SecretPass123!")
 
 	// 1. Create dummy content
 	content := []byte("This is a secret message.")
