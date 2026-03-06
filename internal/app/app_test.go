@@ -123,6 +123,24 @@ func TestDeleteCommand_Flags(t *testing.T) {
 	}
 }
 
+func TestRenameCommand_Exists(t *testing.T) {
+	if renameCmd == nil {
+		t.Fatal("renameCmd is nil")
+	}
+	if renameCmd.Use != "rename <old_archive_path> <new_archive_path>" {
+		t.Errorf("renameCmd.Use = %q, want %q", renameCmd.Use, "rename <old_archive_path> <new_archive_path>")
+	}
+	if renameCmd.GroupID != "actions" {
+		t.Errorf("renameCmd.GroupID = %q, want %q", renameCmd.GroupID, "actions")
+	}
+}
+
+func TestRenameCommand_NoAliases(t *testing.T) {
+	if len(renameCmd.Aliases) != 0 {
+		t.Errorf("renameCmd.Aliases = %v, want empty (no aliases allowed)", renameCmd.Aliases)
+	}
+}
+
 func TestVersionCommand_Exists(t *testing.T) {
 	if versionCmd == nil {
 		t.Fatal("versionCmd is nil")
@@ -166,6 +184,7 @@ func TestSubcommands_Registered(t *testing.T) {
 		"x":       false,
 		"l":       false,
 		"d":       false,
+		"rename":  false,
 		"version": false,
 	}
 

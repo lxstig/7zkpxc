@@ -110,7 +110,7 @@ func TestAddEntry_PasswordNotInArgs(t *testing.T) {
 
 	// This will fail because Exists() will try to show first
 	// But we can verify the password handling principle
-	_ = client.AddEntry("TestGroup", "TestEntry", []byte("archivepassword"), "/path/to/archive")
+	_ = client.AddEntry("TestGroup", "TestEntry", []byte("archivepassword"), "", "/path/to/archive")
 
 	// Verify archive password not in command line
 	cmdContent, err := os.ReadFile(outputFile)

@@ -68,6 +68,12 @@ func LoadConfig() (*Config, error) {
 		return nil, fmt.Errorf("config parse error: %w", err)
 	}
 
+	// Ensure kdbx_path is set — it has no valid default and can only come from
+	// `7zkpxc init`. Catch this early with a clear, actionable message.
+	if cfg.General.KdbxPath == "" {
+		return nil, fmt.Errorf("KeePassXC database path is not configured\n\nRun '7zkpxc init' first to set up your configuration")
+	}
+
 	// Handle default
 	if cfg.General.PasswordLength == 0 {
 		cfg.General.PasswordLength = PasswordLengthDefault

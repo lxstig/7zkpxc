@@ -38,7 +38,7 @@ func runList(cmd *cobra.Command, args []string) error {
 	// 2. Original filename
 	// 3. Base name without extension (for split archives)
 	fmt.Printf("Fetching password for '%s'...\n", archivePath)
-	password, err := GetPasswordForArchive(kp, cfg.General.DefaultGroup, archivePath)
+	password, _, err := GetPasswordForArchive(kp, cfg.General.DefaultGroup, archivePath)
 	if err != nil {
 		if IsPasswordNotFound(err) {
 			return fmt.Errorf("failed to get password (is the entry in '%s'?): %w", cfg.General.DefaultGroup, err)

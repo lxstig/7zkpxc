@@ -25,6 +25,19 @@ func New(dbPath string) *Client {
 	}
 }
 
+// buildCmd creates an exec.Cmd for keepassxc-cli enforcing English output
+// so that error string matching (like "already exists") works consistently regardless of user locale.
+func buildCmd(args ...string) *exec.Cmd {
+	cmd := exec.Command("keepassxc-cli", args...)
+	// Force English locale for parsing CLI output. Qt/KDE apps might need multiple variables.
+	cmd.Env = append(os.Environ(),
+		"LC_ALL=C",
+		"LANGUAGE=en_US.UTF-8",
+		"LANG=en_US.UTF-8",
+	)
+	return cmd
+}
+
 // Close securely wipes the master password from memory
 func (c *Client) Close() {
 	for i := range c.masterPassword {
@@ -43,7 +56,7 @@ func (c *Client) getMasterPassword() []byte {
 // This delegates all cryptographic work to KeePassXC's audited generator.
 // Flags: -L length, -l lowercase, -U uppercase, -n numbers, -s special characters.
 func (c *Client) GeneratePassword(length int) ([]byte, error) {
-	cmd := exec.Command("keepassxc-cli", "generate",
+	cmd := buildCmd("generate",
 		"-L", strconv.Itoa(length),
 		"-l", "-U", "-n", "-s",
 	)
@@ -96,10 +109,40 @@ func (c *Client) Mkdir(groupPath string) error {
 		return err
 	}
 
-	parts := strings.Split(groupPath, "/")
-	currentPath := ""
+	// Clean path
+	groupPath = filepath.ToSlash(filepath.Clean(groupPath))
 
-	for _, part := range parts {
+	// FAST PATH: If the final group already exists, do nothing (1 process call total)
+	if c.GroupExists(groupPath) {
+		return nil
+	}
+
+	// It doesn't exist, we must build it iteratively.
+	// Optimize by finding the deepest existing parent to avoid calling GroupExists()
+	// on the root paths repeatedly.
+	parts := strings.Split(groupPath, "/")
+
+	// Find the deepest existing parent by working backwards
+	startIndex := 0
+	for i := len(parts) - 1; i > 0; i-- {
+		parentPath := strings.Join(parts[:i], "/")
+		if parentPath == "" {
+			continue
+		}
+		if c.GroupExists(parentPath) {
+			startIndex = i
+			break
+		}
+	}
+
+	// Now create only the missing directories, from startIndex to the end
+	currentPath := ""
+	if startIndex > 0 {
+		currentPath = strings.Join(parts[:startIndex], "/")
+	}
+
+	for i := startIndex; i < len(parts); i++ {
+		part := parts[i]
 		if part == "" {
 			continue
 		}
@@ -108,8 +151,7 @@ func (c *Client) Mkdir(groupPath string) error {
 		}
 		currentPath += part
 
-		cmd := exec.Command("keepassxc-cli", "mkdir", c.DatabasePath, currentPath)
-
+		cmd := buildCmd("mkdir", c.DatabasePath, currentPath)
 		var outBuf bytes.Buffer
 		cmd.Stdout = &outBuf
 		cmd.Stderr = &outBuf
@@ -129,37 +171,56 @@ func (c *Client) Mkdir(groupPath string) error {
 
 		err = cmd.Wait()
 		if err != nil {
-			errStr := outBuf.String()
-			// Ignore "already exists" errors, but bubble up auth/other errors
-			if !strings.Contains(errStr, "already exists") {
-				return fmt.Errorf("keepassxc-cli mkdir failed: %s: %s", err, errStr)
-			}
+			return fmt.Errorf("keepassxc-cli mkdir failed for '%s': %s: %s", currentPath, err, outBuf.String())
 		}
 	}
 	return nil
 }
 
-// Exists checks if an entry (or group) exists
-func (c *Client) Exists(path string) bool {
+// GroupExists checks if a group exists
+func (c *Client) GroupExists(path string) bool {
 	if err := c.EnsureUnlocked(); err != nil {
 		return false
 	}
 
-	// Clean path to prevent double slashes //
 	path = filepath.ToSlash(filepath.Clean(path))
 
-	cmd := exec.Command("keepassxc-cli", "show", "-q", c.DatabasePath, path)
+	// 'ls' will succeed (exit code 0) if the group exists, and fail if not.
+	cmdLs := buildCmd("ls", "-q", c.DatabasePath, path)
+	stdinLs, err := cmdLs.StdinPipe()
+	if err == nil {
+		if err := cmdLs.Start(); err == nil {
+			_, _ = stdinLs.Write(c.getMasterPassword())
+			_, _ = stdinLs.Write([]byte("\n"))
+			_ = stdinLs.Close()
+			if err := cmdLs.Wait(); err == nil {
+				return true // It's a group
+			}
+		}
+	}
+
+	return false
+}
+
+// Search queries KeePassXC for entries matching a string and returns their paths
+func (c *Client) Search(query string) ([]string, error) {
+	if err := c.EnsureUnlocked(); err != nil {
+		return nil, err
+	}
+
+	cmd := buildCmd("search", c.DatabasePath, query)
 
 	var outBuf bytes.Buffer
-	cmd.Stderr = &outBuf
+	cmd.Stdout = &outBuf
+	cmd.Stderr = os.Stderr
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		return false
+		return nil, err
 	}
 
 	if err := cmd.Start(); err != nil {
-		return false
+		return nil, err
 	}
 
 	_, _ = stdin.Write(c.getMasterPassword())
@@ -167,13 +228,25 @@ func (c *Client) Exists(path string) bool {
 	_ = stdin.Close()
 
 	if err := cmd.Wait(); err != nil {
-		return false
+		// keepassxc-cli returns exit status 1 when no records are found or error occurs
+		return nil, nil
 	}
-	return true
+
+	lines := strings.Split(strings.TrimSpace(outBuf.String()), "\n")
+	var results []string
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		// keepassxc-cli search sometimes outputs "Database unlocked" or other info, filter them
+		if line != "" && !strings.Contains(strings.ToLower(line), "database") {
+			results = append(results, line)
+		}
+	}
+
+	return results, nil
 }
 
 // AddEntry adds a new entry to KeePassXC
-func (c *Client) AddEntry(group, title string, password []byte, specificUrl string) error {
+func (c *Client) AddEntry(group, title string, password []byte, username string, url string) error {
 	if err := c.EnsureUnlocked(); err != nil {
 		return err
 	}
@@ -186,31 +259,25 @@ func (c *Client) AddEntry(group, title string, password []byte, specificUrl stri
 	}
 	fullPath += title
 
-	// Clean path to prevent double slashes like 'Group//tmp/archive.7z'
-	// keepassxc uses forward slashes for dirs
+	// keepassxc uses forward slashes
 	fullPath = filepath.ToSlash(filepath.Clean(fullPath))
 
-	// Check existence before add to avoid messy errors
-	if c.Exists(fullPath) {
-		return fmt.Errorf("entry '%s' already exists", fullPath)
-	}
-
-	cmd := exec.Command("keepassxc-cli", "add", c.DatabasePath, fullPath,
-		"--username", "7zkpxc",
-		"--url", specificUrl,
+	cmdAdd := buildCmd("add", c.DatabasePath, fullPath,
+		"--username", username,
+		"--url", url,
 		"-p",
 	)
 
 	var outBuf bytes.Buffer
-	cmd.Stdout = &outBuf
-	cmd.Stderr = &outBuf
+	cmdAdd.Stdout = &outBuf
+	cmdAdd.Stderr = &outBuf
 
-	stdin, err := cmd.StdinPipe()
+	stdin, err := cmdAdd.StdinPipe()
 	if err != nil {
 		return err
 	}
 
-	if err := cmd.Start(); err != nil {
+	if err := cmdAdd.Start(); err != nil {
 		return err
 	}
 
@@ -220,11 +287,10 @@ func (c *Client) AddEntry(group, title string, password []byte, specificUrl stri
 	_, _ = stdin.Write([]byte("\n"))
 	_, _ = stdin.Write(password)
 	_, _ = stdin.Write([]byte("\n"))
-
 	_ = stdin.Close()
 
-	if err := cmd.Wait(); err != nil {
-		return fmt.Errorf("keepassxc-cli failed: %s: %s", err, outBuf.String())
+	if err := cmdAdd.Wait(); err != nil {
+		return fmt.Errorf("keepassxc-cli add failed: %s: %s", err, outBuf.String())
 	}
 
 	return nil
@@ -236,7 +302,7 @@ func (c *Client) DeleteEntry(entryPath string) error {
 		return err
 	}
 
-	cmd := exec.Command("keepassxc-cli", "rm", c.DatabasePath, entryPath)
+	cmd := buildCmd("rm", c.DatabasePath, entryPath)
 
 	var outBuf bytes.Buffer
 	cmd.Stdout = &outBuf
@@ -268,7 +334,7 @@ func (c *Client) GetPassword(entryPath string) ([]byte, error) {
 		return nil, err
 	}
 
-	cmd := exec.Command("keepassxc-cli", "show", "-s", "-a", "password", "-q", c.DatabasePath, entryPath)
+	cmd := buildCmd("show", "-s", "-a", "password", "-q", c.DatabasePath, entryPath)
 
 	var outBuf bytes.Buffer
 	cmd.Stdout = &outBuf

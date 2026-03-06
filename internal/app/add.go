@@ -71,10 +71,11 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	}
 
 	err = kp.AddEntry(
-		cfg.General.DefaultGroup,
-		filepath.Base(archiveName),
+		cfg.General.DefaultGroup,   // Flat root
+		filepath.Base(archiveName), // Title
 		password,
-		absArchivePath,
+		absArchivePath, // Username
+		"https://github.com/lxstig/7zkpxc",
 	)
 	if err != nil {
 		return fmt.Errorf("failed to add entry to KeePassXC: %w", err)

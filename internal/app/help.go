@@ -47,7 +47,8 @@ var commandOrder = map[string]int{
 	"x":       3,
 	"l":       4,
 	"d":       5,
-	"version": 6,
+	"rename":  6,
+	"version": 7,
 	// others follow
 }
 
