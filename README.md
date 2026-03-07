@@ -49,6 +49,7 @@ Every archive gets its own unique password. You never see it, never type it, nev
 - **Zero shell leakage** Passwords are piped to 7-Zip via PTY. Nothing in `ps aux`, nothing in history.
 - **Memory safety** Secrets are zeroed in memory immediately after use.
 - **Split volume support** Automatically resolves passwords for split archives (`.7z.001`, `.part001.rar`, etc.).
+- **Rename/move support** `7zkpxc rename` moves the file on disk and updates the KeePassXC entry atomically.
 - **Cloud-ready** Encrypt locally, upload anywhere. Only you (with your KeePassXC database) can decrypt.
 - **Dependency checking** Tells you exactly what's missing before doing anything.
 - **Tab-completing init** Interactive setup with real filesystem tab completion.
@@ -67,7 +68,7 @@ Every archive gets its own unique password. You never see it, never type it, nev
 ### What 7zkpxc Does NOT Protect Against
 
 - A compromised machine with root access (memory inspection, keyloggers).
-- A compromised or weakly protected KeePassXC database —> **use a strong master password**.
+- A compromised or weakly protected KeePassXC database → **use a strong master password**.
 - Physical access attacks (cold boot, evil maid).
 
 ## Requirements
@@ -132,7 +133,10 @@ sudo make purge              # Removes everything including ~/.config/7zkpxc
 # 4. Extract
 7zkpxc x secrets.7z
 
-# 5. Remove the KeePassXC entry when you no longer need the archive
+# 5. Rename or move an archive (updates the file AND the KeePassXC entry)
+7zkpxc rename secrets.7z ~/backup/secrets-2026.7z
+
+# 6. Remove the KeePassXC entry when you no longer need the archive
 7zkpxc d secrets.7z
 ```
 
@@ -145,6 +149,7 @@ sudo make purge              # Removes everything including ~/.config/7zkpxc
 | `7zkpxc x <archive>` | Extract (password fetched from KeePassXC automatically) |
 | `7zkpxc l <archive>` | List archive contents |
 | `7zkpxc d <archive>` | Delete the KeePassXC entry for an archive |
+| `7zkpxc rename <old> <new>` | Move the archive on disk and update its KeePassXC entry |
 | `7zkpxc version` | Print version, commit, and build date |
 
 ### Flags
@@ -207,16 +212,22 @@ export SZKPXC_GENERAL_KDBX_PATH="/other/db.kdbx"
 **Creating an archive (`a`):**
 1. Generates a 64-character random password.
 2. Saves it as a new entry in your KeePassXC database.
-3. Spawns `7z` in a PTY and pipes the password when prompted.
+3. Spawns the configured 7-Zip binary (`7zz`, `7z`, etc.) in a PTY and pipes the password when prompted.
 4. Zeroes the password from memory.
 
 **Extracting or listing (`x`, `l`):**
 1. Looks up the password in KeePassXC using a smart fallback chain:
-   - Normalized name (`archive.7z.001` → `archive.7z`)
-   - Original filename
-   - Base name without extension (last resort for split archives)
-2. Pipes the password to `7z` via PTY.
+   - Exact path match (fastest)
+   - Normalized name for split archives (`archive.7z.001` → `archive.7z`)
+   - Global search by filename (handles moved archives)
+2. Pipes the password to 7-Zip via PTY.
 
+**Renaming or moving (`rename`):**
+1. Looks up the existing KeePassXC entry.
+2. Moves the archive file on disk (`os.Rename`).
+3. Creates a new KeePassXC entry for the new path.
+4. Deletes the old entry.
+5. If step 3 fails, the file move is automatically rolled back.
 
 ## Credits
 
