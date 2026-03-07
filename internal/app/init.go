@@ -325,9 +325,9 @@ func promptPasswordLength() (int, error) {
 }
 
 // detectSevenZipBinary returns the first available 7-Zip binary in PATH.
-// Checks in order: 7z (most common), 7zz (newer upstream builds), 7za (standalone).
+// Checks in order: 7zz (modern upstream), 7z (legacy p7zip), 7za (standalone).
 func detectSevenZipBinary() (string, bool) {
-	for _, name := range []string{"7z", "7zz", "7za"} {
+	for _, name := range []string{"7zz", "7z", "7za"} {
 		if _, err := exec.LookPath(name); err == nil {
 			return name, true
 		}
