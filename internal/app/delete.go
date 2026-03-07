@@ -34,14 +34,20 @@ func runDelete(cmd *cobra.Command, args []string) error {
 	kp := keepass.New(cfg.General.KdbxPath)
 	defer kp.Close()
 
-	// Use the fallback strategy to locate the entry
+	// Reuse GetPasswordForArchive for consistent lookup logic — same fallback
+	// chain as x/l: exact path → split normalization → global search.
+	// We discard the password bytes immediately.
 	fmt.Printf("Looking up entry for '%s'...\n", archivePath)
-	entryPath, err := resolveEntryPath(kp, cfg.General.DefaultGroup, archivePath)
+	password, entryPath, err := GetPasswordForArchive(kp, cfg.General.DefaultGroup, archivePath)
 	if err != nil {
 		if IsPasswordNotFound(err) {
 			return fmt.Errorf("no KeePassXC entry found for '%s' in group '%s'", archivePath, cfg.General.DefaultGroup)
 		}
 		return fmt.Errorf("failed to look up entry: %w", err)
+	}
+	// Zero out the password — we only needed it to verify the entry exists
+	for i := range password {
+		password[i] = 0
 	}
 
 	force, _ := cmd.Flags().GetBool("force")
@@ -64,55 +70,4 @@ func runDelete(cmd *cobra.Command, args []string) error {
 
 	fmt.Printf("Entry '%s' deleted from KeePassXC.\n", entryPath)
 	return nil
-}
-
-// resolveEntryPath attempts to find the full KeePassXC entry path for an archive.
-// It uses the same fallback strategy as GetPasswordForArchive but returns
-// the resolved entry path instead of the password.
-func resolveEntryPath(kp *keepass.Client, entryPathPrefix, archivePath string) (string, error) {
-	info := AnalyzeArchive(archivePath)
-	tried := make([]string, 0, 3)
-
-	// 1. Try normalized name
-	normalizedKey := joinEntry(entryPathPrefix, info.NormalizedName)
-	tried = append(tried, normalizedKey)
-	if _, err := kp.GetPassword(normalizedKey); err == nil {
-		return normalizedKey, nil
-	}
-
-	// 2. Try original base name
-	if info.NormalizedName != info.OriginalName {
-		originalKey := joinEntry(entryPathPrefix, info.OriginalName)
-		tried = append(tried, originalKey)
-		if _, err := kp.GetPassword(originalKey); err == nil {
-			return originalKey, nil
-		}
-	}
-
-	// 3. For split archives, try base name without extension
-	if info.IsSplit {
-		baseWithoutExt := info.NormalizedName
-		ext := ""
-		for i := len(baseWithoutExt) - 1; i >= 0; i-- {
-			if baseWithoutExt[i] == '.' {
-				ext = baseWithoutExt[i:]
-				break
-			}
-		}
-		if ext != "" {
-			base := baseWithoutExt[:len(baseWithoutExt)-len(ext)]
-			if base != info.NormalizedName && base != info.OriginalName {
-				baseKey := joinEntry(entryPathPrefix, base)
-				tried = append(tried, baseKey)
-				if _, err := kp.GetPassword(baseKey); err == nil {
-					return baseKey, nil
-				}
-			}
-		}
-	}
-
-	return "", &PasswordNotFoundError{
-		ArchiveName: info.OriginalName,
-		Tried:       tried,
-	}
 }

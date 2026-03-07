@@ -2,6 +2,8 @@ package sevenzip
 
 import (
 	"bytes"
+	"context"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -10,13 +12,25 @@ import (
 	"github.com/creack/pty"
 )
 
-// Run executes a 7z command with secure password input via PTY.
-// This function is used for all 7z operations (a, x, l) that require password.
-// It handles both single password prompts (extract/list) and double prompts (create/add).
-func Run(binaryPath string, password []byte, args []string) error {
-	cmd := exec.Command(binaryPath, args...)
+// DefaultTimeout is the maximum time a 7z operation may run before being killed.
+// Large archives may need a longer timeout; callers can use RunWithTimeout directly.
+const DefaultTimeout = 4 * time.Hour
 
-	// Force English locale to detect prompt reliably
+// Run executes a 7z command with secure password input via PTY.
+// Uses DefaultTimeout. For custom timeouts use RunWithTimeout.
+func Run(binaryPath string, password []byte, args []string) error {
+	return RunWithTimeout(context.Background(), binaryPath, password, args, DefaultTimeout)
+}
+
+// RunWithTimeout executes a 7z command with a context deadline.
+// The process is forcefully killed if the deadline is exceeded.
+func RunWithTimeout(ctx context.Context, binaryPath string, password []byte, args []string, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, binaryPath, args...)
+
+	// Force English locale to detect prompts reliably regardless of user locale
 	cmd.Env = append(os.Environ(), "LC_ALL=C")
 
 	ptmx, err := pty.Start(cmd)
@@ -27,11 +41,11 @@ func Run(binaryPath string, password []byte, args []string) error {
 
 	done := make(chan error, 1)
 
-	// Output processor
+	// Output processor goroutine: intercepts password prompts, suppresses echo
 	go func() {
 		defer close(done)
 
-		buf := make([]byte, 1024)
+		buf := make([]byte, 32*1024) // 32 KB — large enough to avoid per-byte reads
 		suppressUntilNewline := false
 
 		for {
@@ -40,58 +54,52 @@ func Run(binaryPath string, password []byte, args []string) error {
 				chunk := buf[:n]
 				lowerChunk := bytes.ToLower(chunk)
 
-				// Detect password prompt (handles both "Enter password" and "Reenter password")
+				// Detect password prompt (handles "Enter password" and "Reenter password")
 				if !suppressUntilNewline && (bytes.Contains(lowerChunk, []byte("enter password")) ||
 					bytes.Contains(lowerChunk, []byte("password:"))) {
 
-					// Echo prompt to stdout
 					_, _ = os.Stdout.Write(chunk)
 
-					// Small delay to ensure prompt is flushed
+					// Small delay to ensure the prompt is flushed before writing
 					time.Sleep(10 * time.Millisecond)
 
-					// Write password + newline
 					_, _ = ptmx.Write(password)
 					_, _ = ptmx.Write([]byte("\n"))
-					suppressUntilNewline = true // Start suppressing echo
+					suppressUntilNewline = true
 					continue
 				}
 
 				if suppressUntilNewline {
-					// Search for newline which marks end of password echo
+					// Suppress echo until we see the newline that terminates it
 					nlIdx := bytes.IndexAny(chunk, "\n\r")
 					if nlIdx != -1 {
-						// Found newline!
 						suppressUntilNewline = false
-
-						// If there is content AFTER the newline, print it
 						if nlIdx+1 < len(chunk) {
 							_, _ = os.Stdout.Write(chunk[nlIdx+1:])
 						}
 					}
-					// If no newline, we suppress the entire chunk (it's part of the password echo)
 					continue
 				}
 
-				// Normal output
 				_, _ = os.Stdout.Write(chunk)
 			}
 
 			if err != nil {
 				if err != io.EOF {
-					// PTY read error (process exited?)
-					_ = err
+					_ = err // PTY read errors on process exit are expected
 				}
 				break
 			}
 		}
 	}()
 
-	// We block here until process exit
 	errWait := cmd.Wait()
-
-	// Wait for goroutine to finish
 	<-done
+
+	// Distinguish timeout from other errors
+	if ctx.Err() == context.DeadlineExceeded {
+		return fmt.Errorf("7z operation timed out after %s", timeout)
+	}
 
 	return errWait
 }

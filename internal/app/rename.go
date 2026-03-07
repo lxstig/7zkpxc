@@ -1,9 +1,12 @@
 package app
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"syscall"
 
 	"github.com/lxstig/7zkpxc/internal/config"
 	"github.com/lxstig/7zkpxc/internal/keepass"
@@ -13,7 +16,7 @@ import (
 var renameCmd = &cobra.Command{
 	Use:     "rename <old_archive_path> <new_archive_path>",
 	Short:   "Rename or move an archive and update its KeePassXC entry",
-	Long:    `Renames or moves an archive file on disk and updates the corresponding entry inside the KeePassXC database. Both the file system operation and the KeePass record are updated atomically: if any step fails the previous steps are rolled back.`,
+	Long:    `Renames or moves an archive file on disk and updates the corresponding entry inside the KeePassXC database. Both the file system operation and the KeePass record are updated atomically: if any step fails the previous steps are rolled back. Cross-device moves (different mount points) are handled transparently via copy+delete.`,
 	Args:    cobra.ExactArgs(2),
 	RunE:    runRename,
 	GroupID: "actions",
@@ -44,7 +47,8 @@ func runRename(cmd *cobra.Command, args []string) error {
 	}
 
 	// 1. Verify the source file actually exists on disk
-	if _, err := os.Stat(absOld); os.IsNotExist(err) {
+	srcInfo, err := os.Stat(absOld)
+	if os.IsNotExist(err) {
 		return fmt.Errorf("source archive does not exist: %s", absOld)
 	} else if err != nil {
 		return fmt.Errorf("cannot access source archive: %w", err)
@@ -75,9 +79,10 @@ func runRename(cmd *cobra.Command, args []string) error {
 		}
 	}()
 
-	// 5. Rename the file on disk
+	// 5. Move the file on disk (same-device: rename; cross-device: copy+delete)
 	fmt.Printf("Moving '%s' → '%s'...\n", absOld, absNew)
-	if err := os.Rename(absOld, absNew); err != nil {
+	crossDevice, err := moveFile(absOld, absNew, srcInfo)
+	if err != nil {
 		return fmt.Errorf("failed to move archive on disk: %w", err)
 	}
 
@@ -95,7 +100,14 @@ func runRename(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		// Rollback: move the file back
 		fmt.Printf("KeePass update failed, rolling back file move...\n")
-		if rbErr := os.Rename(absNew, absOld); rbErr != nil {
+		var rbErr error
+		if crossDevice {
+			// Copy was already done; source was removed — restore by moving back
+			rbErr = moveFileCopy(absNew, absOld, srcInfo)
+		} else {
+			rbErr = os.Rename(absNew, absOld)
+		}
+		if rbErr != nil {
 			return fmt.Errorf("keepassxc-cli add failed: %w\nROLLBACK FAILED (file is at %s): %v", err, absNew, rbErr)
 		}
 		return fmt.Errorf("failed to create new KeePass entry (file move rolled back): %w", err)
@@ -111,5 +123,57 @@ func runRename(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Println("Done. Archive moved and KeePassXC entry updated.")
+	return nil
+}
+
+// moveFile moves src to dst. It tries os.Rename first; if that fails with
+// EXDEV (cross-device link), it falls back to a copy+delete. Returns whether
+// a cross-device copy was performed, so the caller can roll back correctly.
+func moveFile(src, dst string, srcInfo os.FileInfo) (crossDevice bool, err error) {
+	if err := os.Rename(src, dst); err == nil {
+		return false, nil
+	} else if !errors.Is(err, syscall.EXDEV) {
+		return false, err
+	}
+
+	// Cross-device: copy then remove the source
+	if err := moveFileCopy(src, dst, srcInfo); err != nil {
+		return true, err
+	}
+	return true, nil
+}
+
+// moveFileCopy copies src to dst byte-for-byte, preserving permissions,
+// then removes src. dst must not exist.
+func moveFileCopy(src, dst string, srcInfo os.FileInfo) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("open source: %w", err)
+	}
+	defer func() { _ = in.Close() }()
+
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY, srcInfo.Mode())
+	if err != nil {
+		return fmt.Errorf("create destination: %w", err)
+	}
+
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		_ = os.Remove(dst) // clean up partial file
+		return fmt.Errorf("copy data: %w", err)
+	}
+
+	if err := out.Close(); err != nil {
+		_ = os.Remove(dst)
+		return fmt.Errorf("close destination: %w", err)
+	}
+
+	if err := os.Remove(src); err != nil {
+		// Destination is already written — best effort remove of dst to avoid
+		// having two copies. If that also fails, leave dst in place (it's
+		// complete and correct).
+		return fmt.Errorf("remove source after copy: %w", err)
+	}
+
 	return nil
 }

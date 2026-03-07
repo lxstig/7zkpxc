@@ -371,3 +371,36 @@ func (c *Client) GetPassword(entryPath string) ([]byte, error) {
 
 	return passCopy, nil
 }
+
+// GetAttribute retrieves a single named attribute from a KeePass entry.
+// Common attribute names: "Username", "URL", "Notes".
+func (c *Client) GetAttribute(entryPath, attribute string) (string, error) {
+	if err := c.EnsureUnlocked(); err != nil {
+		return "", err
+	}
+
+	cmd := buildCmd("show", "-a", attribute, "-q", c.DatabasePath, entryPath)
+
+	var outBuf bytes.Buffer
+	cmd.Stdout = &outBuf
+	cmd.Stderr = os.Stderr
+
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return "", err
+	}
+
+	if err := cmd.Start(); err != nil {
+		return "", err
+	}
+
+	_, _ = stdin.Write(c.getMasterPassword())
+	_, _ = stdin.Write([]byte("\n"))
+	_ = stdin.Close()
+
+	if err := cmd.Wait(); err != nil {
+		return "", fmt.Errorf("failed to get attribute '%s': %w", attribute, err)
+	}
+
+	return strings.TrimSpace(outBuf.String()), nil
+}
