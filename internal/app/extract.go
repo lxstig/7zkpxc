@@ -56,7 +56,7 @@ func runExtract(cmd *cobra.Command, args []string) error {
 		sevenZipArgs = append(sevenZipArgs, "-o"+outputDir)
 	}
 
-	err = sevenzip.Run(password, sevenZipArgs)
+	err = sevenzip.Run(cfg.SevenZip.BinaryPath, password, sevenZipArgs)
 
 	for i := range password {
 		password[i] = 0

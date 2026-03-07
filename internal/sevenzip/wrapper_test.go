@@ -23,7 +23,7 @@ func TestRun_InvalidCommand(t *testing.T) {
 	}
 
 	// Run with invalid args - should fail
-	err = Run([]byte("testpassword"), []string{"invalidcmd"})
+	err = Run("7z", []byte("testpassword"), []string{"invalidcmd"})
 	if err == nil {
 		t.Error("Expected error for invalid 7z command, got nil")
 	}
@@ -82,7 +82,7 @@ func TestRun_EncryptionDecryption(t *testing.T) {
 	// 2. Encrypt using Run() (Mocking '7zkpxc a')
 	// We pass -p to trigger 7z's password prompt.
 	// wrapper.Run should handle the prompt interaction.
-	err := Run(password, []string{"a", archiveFile, sourceFile, "-p", "-mhe=on"})
+	err := Run("7z", password, []string{"a", archiveFile, sourceFile, "-p", "-mhe=on"})
 	if err != nil {
 		t.Fatalf("Failed to encrypt archive: %v", err)
 	}
@@ -94,7 +94,7 @@ func TestRun_EncryptionDecryption(t *testing.T) {
 
 	// 4. Extract using Run() (Mocking '7zkpxc x')
 	// We pass -y to overwrite if needed (though dir is unique)
-	err = Run(password, []string{"x", archiveFile, "-o" + extractDir, "-y"})
+	err = Run("7z", password, []string{"x", archiveFile, "-o" + extractDir, "-y"})
 	if err != nil {
 		t.Fatalf("Failed to extract archive: %v", err)
 	}

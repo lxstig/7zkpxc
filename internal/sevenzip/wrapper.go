@@ -13,8 +13,8 @@ import (
 // Run executes a 7z command with secure password input via PTY.
 // This function is used for all 7z operations (a, x, l) that require password.
 // It handles both single password prompts (extract/list) and double prompts (create/add).
-func Run(password []byte, args []string) error {
-	cmd := exec.Command("7z", args...)
+func Run(binaryPath string, password []byte, args []string) error {
+	cmd := exec.Command(binaryPath, args...)
 
 	// Force English locale to detect prompt reliably
 	cmd.Env = append(os.Environ(), "LC_ALL=C")

@@ -128,7 +128,7 @@ func runAdd(cmd *cobra.Command, args []string) error {
 	sevenZipArgs = append(sevenZipArgs, archiveName)
 	sevenZipArgs = append(sevenZipArgs, files...)
 
-	err = sevenzip.Run(password, sevenZipArgs)
+	err = sevenzip.Run(cfg.SevenZip.BinaryPath, password, sevenZipArgs)
 
 	// Zero out the password copy
 	for i := range password {

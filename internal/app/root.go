@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os/exec"
 
+	"github.com/lxstig/7zkpxc/internal/config"
 	"github.com/spf13/cobra"
 )
 
@@ -61,10 +62,16 @@ func checkDependencies(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
+	// Resolve the configured 7z binary name (falls back to "7z" if config unavailable)
+	sevenZipBin := "7z"
+	if cfg, err := config.LoadConfig(); err == nil {
+		sevenZipBin = cfg.SevenZip.BinaryPath
+	}
+
 	var missing []string
 
-	if _, err := exec.LookPath("7z"); err != nil {
-		missing = append(missing, "7z")
+	if _, err := exec.LookPath(sevenZipBin); err != nil {
+		missing = append(missing, sevenZipBin)
 	}
 
 	if _, err := exec.LookPath("keepassxc-cli"); err != nil {
@@ -79,8 +86,8 @@ func checkDependencies(cmd *cobra.Command, args []string) error {
 
 	for _, dep := range missing {
 		switch dep {
-		case "7z":
-			msg += "\n  7z             → https://7-zip.org"
+		case sevenZipBin:
+			msg += fmt.Sprintf("\n  %-14s → https://7-zip.org", dep)
 			msg += "\n                   Arch: pacman -S 7zip"
 			msg += "\n                   Debian/Ubuntu: apt install p7zip-full"
 		case "keepassxc-cli":

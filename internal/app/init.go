@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -177,7 +178,18 @@ func runInit() error {
 	}
 	cfg.General.PasswordLength = length
 
-	// --- Step 3: Save with Comments ---
+	// --- Step 4: 7z Binary ---
+	binary, err := promptSevenZipBinary()
+	if err != nil {
+		if errors.Is(err, errInitCancelled) {
+			fmt.Println("\nSetup cancelled.")
+			return nil
+		}
+		return err
+	}
+	cfg.SevenZip.BinaryPath = binary
+
+	// --- Save ---
 	if err := saveConfigWithComments(cfg); err != nil {
 		return fmt.Errorf("error saving config: %w", err)
 	}
@@ -187,6 +199,7 @@ func runInit() error {
 	fmt.Printf("  DB Path : %s\n", cfg.General.KdbxPath)
 	fmt.Printf("  Group   : %s\n", cfg.General.DefaultGroup)
 	fmt.Printf("  Length  : %d\n", cfg.General.PasswordLength)
+	fmt.Printf("  7z bin  : %s\n", cfg.SevenZip.BinaryPath)
 	return nil
 }
 
@@ -309,6 +322,52 @@ func promptPasswordLength() (int, error) {
 
 		return val, nil
 	}
+}
+
+// detectSevenZipBinary returns the first available 7-Zip binary in PATH.
+// Checks in order: 7z (most common), 7zz (newer upstream builds), 7za (standalone).
+func detectSevenZipBinary() (string, bool) {
+	for _, name := range []string{"7z", "7zz", "7za"} {
+		if _, err := exec.LookPath(name); err == nil {
+			return name, true
+		}
+	}
+	return "7z", false
+}
+
+// promptSevenZipBinary detects available 7z binaries and lets the user confirm or override.
+func promptSevenZipBinary() (string, error) {
+	detected, found := detectSevenZipBinary()
+
+	var defaultVal string
+	if found {
+		defaultVal = detected
+		fmt.Printf("Detected 7-Zip binary: %s\n", detected)
+	} else {
+		defaultVal = "7z"
+		fmt.Println("Warning: no 7-Zip binary found in PATH (7z, 7zz, 7za).")
+		fmt.Println("  You can set the binary name manually below.")
+	}
+
+	rl, err := readline.NewEx(&readline.Config{
+		Prompt:      fmt.Sprintf("7-Zip binary name [%s]: ", defaultVal),
+		HistoryFile: "",
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to initialize readline: %w", err)
+	}
+	defer func() { _ = rl.Close() }()
+
+	line, err := rl.Readline()
+	if err != nil {
+		return "", errInitCancelled
+	}
+
+	input := strings.TrimSpace(line)
+	if input == "" {
+		return defaultVal, nil
+	}
+	return input, nil
 }
 
 func expandAndResolve(path string) string {

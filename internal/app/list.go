@@ -48,7 +48,7 @@ func runList(cmd *cobra.Command, args []string) error {
 
 	// 7z l archive.7z — password is sent via PTY when 7z prompts for it
 	sevenZipArgs := []string{"l", archivePath}
-	err = sevenzip.Run(password, sevenZipArgs)
+	err = sevenzip.Run(cfg.SevenZip.BinaryPath, password, sevenZipArgs)
 
 	for i := range password {
 		password[i] = 0
