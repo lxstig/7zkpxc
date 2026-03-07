@@ -10,6 +10,7 @@ import (
 
 	"github.com/lxstig/7zkpxc/internal/config"
 	"github.com/lxstig/7zkpxc/internal/keepass"
+	"github.com/lxstig/7zkpxc/internal/sevenzip"
 	"github.com/spf13/cobra"
 )
 
@@ -69,7 +70,7 @@ func runRename(cmd *cobra.Command, args []string) error {
 	defer kp.Close()
 
 	fmt.Printf("Locating KeePass entry for '%s'...\n", oldArchivePath)
-	password, oldKeePassPath, err := GetPasswordForArchive(kp, cfg.General.DefaultGroup, oldArchivePath)
+	password, oldKeePassPath, _, err := resolvePassword(kp, cfg.General.DefaultGroup, oldArchivePath)
 	if err != nil {
 		return fmt.Errorf("could not find KeePass entry for '%s': %w", oldArchivePath, err)
 	}
@@ -79,6 +80,15 @@ func runRename(cmd *cobra.Command, args []string) error {
 		}
 	}()
 
+	// 4.5 Verify the password is correct BEFORE touching anything on disk.
+	//     This protects against accidental wrong-entry selection in multi-match.
+	//     'sevenzip t' (test) decrypts without extracting; any decryption failure
+	//     means the selected entry's password does not match this archive.
+	fmt.Printf("Verifying password against archive...\n")
+	if err := sevenzip.Run(cfg.SevenZip.BinaryPath, password, []string{"t", absOld}); err != nil {
+		return fmt.Errorf("password verification failed — wrong entry selected or archive is corrupt: %w", err)
+	}
+
 	// 5. Move the file on disk (same-device: rename; cross-device: copy+delete)
 	fmt.Printf("Moving '%s' → '%s'...\n", absOld, absNew)
 	crossDevice, err := moveFile(absOld, absNew, srcInfo)
@@ -86,8 +96,13 @@ func runRename(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to move archive on disk: %w", err)
 	}
 
-	// 6. Add new KeePass entry (rollback file move on failure)
-	newEntryTitle := filepath.Base(newArchivePath)
+	// 6. Add new KeePass entry with UUID title (rollback file move on failure)
+	//    New UUID is generated — rename = new identity.
+	newUUID8, err := generateUUID8()
+	if err != nil {
+		return fmt.Errorf("failed to generate entry UUID: %w", err)
+	}
+	newEntryTitle := makeEntryTitle(filepath.Base(absNew), newUUID8)
 	fmt.Printf("Updating KeePassXC entry (title: %s)...\n", newEntryTitle)
 
 	err = kp.AddEntry(

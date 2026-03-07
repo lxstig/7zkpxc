@@ -99,22 +99,31 @@ func runAddCreate(
 	}()
 
 	// 2. Save to KeePassXC BEFORE creating the archive.
-	//    Rollback is straightforward (delete entry). The reverse (delete archive
-	//    on KeePass failure) risks losing data the user just compressed.
+	//    If 7z fails we can roll this back cleanly. The reverse is harder:
+	//    an archive with no KeePass entry is silently lost data.
+	//
+	//    Title = "basename (uuid8)" — path-independent, UUID ensures uniqueness
+	//    even when two archives share the same filename.
 	fmt.Printf("Saving entry to KeePassXC (%s)...\n", cfg.General.KdbxPath)
 	absArchivePath, err := filepath.Abs(archiveName)
 	if err != nil {
 		return fmt.Errorf("failed to resolve archive path: %w", err)
 	}
 
-	keePassEntryPath, err := addEntryWithCollisionResolution(
-		kp,
-		cfg.General.DefaultGroup,
-		filepath.Base(archiveName),
-		password,
-		absArchivePath,
-	)
+	uuid8, err := generateUUID8()
 	if err != nil {
+		return fmt.Errorf("failed to generate entry UUID: %w", err)
+	}
+	entryTitle := makeEntryTitle(filepath.Base(absArchivePath), uuid8)
+	keePassEntryPath := filepath.ToSlash(filepath.Clean(cfg.General.DefaultGroup + "/" + entryTitle))
+
+	if err := kp.AddEntry(
+		cfg.General.DefaultGroup,
+		entryTitle,
+		password,
+		absArchivePath, // Username — human-readable path for reference
+		"https://github.com/lxstig/7zkpxc",
+	); err != nil {
 		return fmt.Errorf("failed to add entry to KeePassXC: %w", err)
 	}
 
@@ -151,7 +160,7 @@ func runAddUpdate(
 ) error {
 	fmt.Printf("Archive '%s' already exists — fetching password from KeePassXC...\n", archiveName)
 
-	password, _, err := GetPasswordForArchive(kp, cfg.General.DefaultGroup, archiveName)
+	password, entryPath, needsMigration, err := resolvePassword(kp, cfg.General.DefaultGroup, archiveName)
 	if err != nil {
 		if IsPasswordNotFound(err) {
 			return fmt.Errorf("archive '%s' exists on disk but has no entry in KeePassXC.\n"+
@@ -189,6 +198,19 @@ func runAddUpdate(
 		return fmt.Errorf("failed to update archive: %w", err)
 	}
 
+	// Migrate old-format entry while password is still valid (defer zeroes later)
+	if needsMigration {
+		lastKnownPath := entryPath
+		if lk, e := kp.GetAttribute(entryPath, "Username"); e == nil && lk != "" {
+			lastKnownPath = lk
+		}
+		if _, e := migrateEntry(kp, cfg.General.DefaultGroup, entryPath, password, lastKnownPath); e != nil {
+			fmt.Printf("Note: could not migrate entry to new format: %v\n", e)
+		} else {
+			fmt.Println("(Entry migrated to new format.)")
+		}
+	}
+
 	fmt.Println("Files added to existing archive successfully.")
 	return nil
 }
@@ -212,53 +234,4 @@ func buildCompressionArgs(cmd *cobra.Command, defaultArgs []string) []string {
 	}
 
 	return args
-}
-
-// addEntryWithCollisionResolution attempts to add a KeePass entry to the flat
-// DefaultGroup. If an entry with the same title already exists it distinguishes
-// two cases:
-//
-//  1. Same absolute path (absPath) in the Username field → already registered,
-//     return a clear error so the caller can inform the user.
-//  2. Different path → real collision (same filename, different directory).
-//     Fall back to DefaultGroup/<parentDirName>/<title> (one extra level only).
-//
-// Returns the final KeePass entry path so the caller can roll it back if needed.
-func addEntryWithCollisionResolution(
-	kp *keepass.Client,
-	defaultGroup, title string,
-	password []byte,
-	absPath string,
-) (string, error) {
-	flatPath := filepath.ToSlash(filepath.Clean(defaultGroup + "/" + title))
-
-	err := kp.AddEntry(defaultGroup, title, password, absPath, "https://github.com/lxstig/7zkpxc")
-	if err == nil {
-		return flatPath, nil
-	}
-
-	// Only attempt collision resolution for "already exists" errors
-	if !strings.Contains(err.Error(), "already exists") {
-		return "", err
-	}
-
-	// Check whose archive occupies the flat path
-	existing, attrErr := kp.GetAttribute(flatPath, "Username")
-	if attrErr == nil && existing == absPath {
-		return "", fmt.Errorf("archive '%s' is already registered in KeePassXC at '%s'", title, flatPath)
-	}
-
-	// Real collision: same filename, different directory.
-	// Use immediate parent directory name as a single disambiguating sub-group.
-	parentDir := filepath.Base(filepath.Dir(absPath))
-	collisionGroup := filepath.ToSlash(filepath.Clean(defaultGroup + "/" + parentDir))
-	collisionPath := collisionGroup + "/" + title
-
-	fmt.Printf("Note: '%s' already exists in KeePassXC — storing under '%s' to avoid collision.\n", title, collisionGroup)
-
-	if err2 := kp.AddEntry(collisionGroup, title, password, absPath, "https://github.com/lxstig/7zkpxc"); err2 != nil {
-		return "", fmt.Errorf("failed to add entry even after collision resolution: %w", err2)
-	}
-
-	return collisionPath, nil
 }

@@ -8,14 +8,16 @@ import (
 
 // MockPasswordProvider for testing
 type MockPasswordProvider struct {
-	passwords map[string][]byte
-	calls     []string
+	passwords  map[string][]byte
+	attributes map[string]map[string]string // entryPath -> attribute -> value
+	calls      []string
 }
 
 func NewMockPasswordProvider() *MockPasswordProvider {
 	return &MockPasswordProvider{
-		passwords: make(map[string][]byte),
-		calls:     make([]string, 0),
+		passwords:  make(map[string][]byte),
+		attributes: make(map[string]map[string]string),
+		calls:      make([]string, 0),
 	}
 }
 
@@ -29,6 +31,23 @@ func (m *MockPasswordProvider) GetPassword(key string) ([]byte, error) {
 
 func (m *MockPasswordProvider) SetPassword(key string, password []byte) {
 	m.passwords[key] = password
+}
+
+func (m *MockPasswordProvider) SetAttribute(entryPath, attribute, value string) {
+	if m.attributes[entryPath] == nil {
+		m.attributes[entryPath] = make(map[string]string)
+	}
+	m.attributes[entryPath][attribute] = value
+}
+
+func (m *MockPasswordProvider) GetAttribute(entryPath, attribute string) (string, error) {
+	m.calls = append(m.calls, "attr:"+entryPath+":"+attribute)
+	if attrs, ok := m.attributes[entryPath]; ok {
+		if val, ok := attrs[attribute]; ok {
+			return val, nil
+		}
+	}
+	return "", errors.New("attribute not found")
 }
 
 func (m *MockPasswordProvider) Search(query string) ([]string, error) {
@@ -46,6 +65,91 @@ func (m *MockPasswordProvider) Search(query string) ([]string, error) {
 func (m *MockPasswordProvider) GetCalls() []string {
 	return m.calls
 }
+
+// -------------------------------------------------------------------
+// UUID helpers
+// -------------------------------------------------------------------
+
+func TestGenerateUUID8(t *testing.T) {
+	a, err := generateUUID8()
+	if err != nil {
+		t.Fatalf("generateUUID8 error: %v", err)
+	}
+	if len(a) != 8 {
+		t.Errorf("expected 8 chars, got %d: %q", len(a), a)
+	}
+	for _, c := range a {
+		if !strings.ContainsRune("0123456789abcdef", c) {
+			t.Errorf("non-hex character %q in UUID %q", c, a)
+		}
+	}
+	// Should be random — very unlikely to collide
+	b, _ := generateUUID8()
+	if a == b {
+		t.Errorf("two generateUUID8 calls returned the same value %q (astronomically unlikely)", a)
+	}
+}
+
+func TestMakeEntryTitle(t *testing.T) {
+	title := makeEntryTitle("backup.7z", "a3b2c1d0")
+	if title != "backup.7z (a3b2c1d0)" {
+		t.Errorf("got %q, want %q", title, "backup.7z (a3b2c1d0)")
+	}
+}
+
+func TestParseEntryTitle(t *testing.T) {
+	tests := []struct {
+		input        string
+		wantBasename string
+		wantUUID     string
+		wantOK       bool
+	}{
+		{"backup.7z (a3b2c1d0)", "backup.7z", "a3b2c1d0", true},
+		{"my archive.tar.gz (ffffffff)", "my archive.tar.gz", "ffffffff", true},
+		{"backup.7z", "", "", false},                  // no UUID
+		{"backup.7z (ABCD1234)", "", "", false},       // uppercase UUID not accepted
+		{"backup.7z (a3b2c1d)", "", "", false},        // 7 chars, not 8
+		{"backup.7z (a3b2c1d00)", "", "", false},      // 9 chars
+		{"(a3b2c1d0)", "", "", false},                 // empty basename
+		{"backup.7z (a3b2c1d0) extra", "", "", false}, // trailing text
+	}
+
+	for _, tt := range tests {
+		basename, uuid, ok := parseEntryTitle(tt.input)
+		if ok != tt.wantOK {
+			t.Errorf("parseEntryTitle(%q) ok=%v, want %v", tt.input, ok, tt.wantOK)
+			continue
+		}
+		if ok {
+			if basename != tt.wantBasename {
+				t.Errorf("parseEntryTitle(%q) basename=%q, want %q", tt.input, basename, tt.wantBasename)
+			}
+			if uuid != tt.wantUUID {
+				t.Errorf("parseEntryTitle(%q) uuid=%q, want %q", tt.input, uuid, tt.wantUUID)
+			}
+		}
+	}
+}
+
+func TestMakeParseRoundTrip(t *testing.T) {
+	basename := "my.archive.tar.gz"
+	uuid8 := "deadbeef"
+	title := makeEntryTitle(basename, uuid8)
+	gotBasename, gotUUID, ok := parseEntryTitle(title)
+	if !ok {
+		t.Fatalf("parseEntryTitle(%q) returned ok=false", title)
+	}
+	if gotBasename != basename {
+		t.Errorf("basename round-trip: got %q, want %q", gotBasename, basename)
+	}
+	if gotUUID != uuid8 {
+		t.Errorf("uuid8 round-trip: got %q, want %q", gotUUID, uuid8)
+	}
+}
+
+// -------------------------------------------------------------------
+// normalizeArchiveName
+// -------------------------------------------------------------------
 
 func TestNormalizeArchiveName(t *testing.T) {
 	tests := []struct {
@@ -152,6 +256,149 @@ func TestJoinEntry(t *testing.T) {
 	}
 }
 
+// -------------------------------------------------------------------
+// GetPasswordForArchive — UUID format (new entries)
+// -------------------------------------------------------------------
+
+// addUUIDEntry is a test helper: registers a UUID-format entry in the mock.
+func addUUIDEntry(m *MockPasswordProvider, prefix, basename, uuid8, lastKnownPath string, password []byte) string {
+	title := makeEntryTitle(basename, uuid8)
+	entryPath := title
+	if prefix != "" {
+		entryPath = prefix + "/" + title
+	}
+	m.SetPassword(entryPath, password)
+	m.SetAttribute(entryPath, "Username", lastKnownPath)
+	return entryPath
+}
+
+func TestGetPasswordForArchive_UUIDFormat(t *testing.T) {
+	mock := NewMockPasswordProvider()
+	addUUIDEntry(mock, "backups", "archive.7z", "a3b2c1d0", "/home/user/archive.7z", []byte("secret"))
+
+	pass, _, err := GetPasswordForArchive(mock, "backups", "archive.7z")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(pass) != "secret" {
+		t.Errorf("got password %q, want %q", pass, "secret")
+	}
+}
+
+func TestGetPasswordForArchive_MultiMatch(t *testing.T) {
+	mock := NewMockPasswordProvider()
+	addUUIDEntry(mock, "backups", "backup.7z", "a3b2c1d0", "/cloud/backup.7z", []byte("pass1"))
+	addUUIDEntry(mock, "backups", "backup.7z", "f1e2d3c4", "/local/backup.7z", []byte("pass2"))
+
+	_, _, err := GetPasswordForArchive(mock, "backups", "backup.7z")
+	if err == nil {
+		t.Fatal("expected MultiMatchError, got nil")
+	}
+	if !IsMultiMatch(err) {
+		t.Fatalf("expected MultiMatchError, got %T: %v", err, err)
+	}
+	mm := err.(*MultiMatchError)
+	if len(mm.Candidates) != 2 {
+		t.Errorf("expected 2 candidates, got %d", len(mm.Candidates))
+	}
+	if mm.Basename != "backup.7z" {
+		t.Errorf("Basename = %q, want %q", mm.Basename, "backup.7z")
+	}
+}
+
+func TestGetPasswordForArchive_UUIDFormat_NoMatch(t *testing.T) {
+	mock := NewMockPasswordProvider()
+	// Entry for a different basename — should not match
+	addUUIDEntry(mock, "backups", "other.7z", "a3b2c1d0", "/home/user/other.7z", []byte("secret"))
+
+	_, _, err := GetPasswordForArchive(mock, "backups", "archive.7z")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !IsPasswordNotFound(err) {
+		t.Fatalf("expected PasswordNotFoundError, got %T: %v", err, err)
+	}
+}
+
+func TestGetPasswordForArchive_UUIDFormat_SplitArchive(t *testing.T) {
+	mock := NewMockPasswordProvider()
+	// Entry recorded under the normalized name (archive.7z) with UUID
+	addUUIDEntry(mock, "backups", "archive.7z", "a3b2c1d0", "/home/user/archive.7z", []byte("split_pass"))
+
+	// User references a split volume
+	pass, _, err := GetPasswordForArchive(mock, "backups", "archive.7z.001")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(pass) != "split_pass" {
+		t.Errorf("got %q, want %q", pass, "split_pass")
+	}
+}
+
+// -------------------------------------------------------------------
+// GetPasswordForArchive — backward compat (old encoded-path format)
+// -------------------------------------------------------------------
+
+func TestGetPasswordForArchive_BackwardCompat_Encoded(t *testing.T) {
+	mock := NewMockPasswordProvider()
+	// Simulate an entry created by the old encodeArchivePath logic
+	// Use a relative path so filepath.Abs is predictable in tests
+	encoded := encodeArchivePath("/home/user/archive.7z")
+	entryPath := "backups/" + encoded
+	mock.SetPassword(entryPath, []byte("old_encoded_pass"))
+	// Username (last-known-path) enables the backward compat search path
+	mock.SetAttribute(entryPath, "Username", "/home/user/archive.7z")
+
+	// Lookup via absolute path — must hit step 2 (backward compat)
+	pass, _, err := GetPasswordForArchive(mock, "backups", "/home/user/archive.7z")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(pass) != "old_encoded_pass" {
+		t.Errorf("got %q, want %q", pass, "old_encoded_pass")
+	}
+}
+
+// TestGetPasswordForArchive_BackwardCompat_SearchOldFormat tests the case where
+// keepassxc-cli's Search returns an old-format entry (encoded path title) and
+// the lookup chain accepts it via Username verification instead of silently
+// discarding it. This was the production failure mode after the UUID migration.
+func TestGetPasswordForArchive_BackwardCompat_SearchOldFormat(t *testing.T) {
+	mock := NewMockPasswordProvider()
+	// Old format: title is encoded absolute path, no UUID suffix
+	encoded := encodeArchivePath("/home/user/archive.7z")
+	entryPath := "backups/" + encoded
+	mock.SetPassword(entryPath, []byte("search_old_pass"))
+	mock.SetAttribute(entryPath, "Username", "/home/user/archive.7z")
+
+	// Search by basename alone (no absolute path known — simulates post-format scenario)
+	pass, _, err := GetPasswordForArchive(mock, "backups", "archive.7z")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(pass) != "search_old_pass" {
+		t.Errorf("got %q, want %q", pass, "search_old_pass")
+	}
+}
+
+func TestGetPasswordForArchive_BackwardCompat_FlatBasename(t *testing.T) {
+	mock := NewMockPasswordProvider()
+	// Oldest format: just the basename, no encoding
+	mock.SetPassword("backups/archive.7z", []byte("flat_pass"))
+
+	pass, _, err := GetPasswordForArchive(mock, "backups", "archive.7z")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(pass) != "flat_pass" {
+		t.Errorf("got %q, want %q", pass, "flat_pass")
+	}
+}
+
+// -------------------------------------------------------------------
+// Original test suite (kept for regression)
+// -------------------------------------------------------------------
+
 func TestGetPasswordForArchive(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -162,7 +409,7 @@ func TestGetPasswordForArchive(t *testing.T) {
 		wantError    bool
 	}{
 		{
-			name:        "Standard archive - found",
+			name:        "Standard archive - flat basename (backward compat)",
 			archivePath: "archive.7z",
 			prefix:      "backups",
 			setupMock: func(m *MockPasswordProvider) {
@@ -172,7 +419,7 @@ func TestGetPasswordForArchive(t *testing.T) {
 			wantError:    false,
 		},
 		{
-			name:        "Split archive - normalized name found",
+			name:        "Split archive - normalized name (flat, backward compat)",
 			archivePath: "archive.7z.001",
 			prefix:      "backups",
 			setupMock: func(m *MockPasswordProvider) {
@@ -182,7 +429,7 @@ func TestGetPasswordForArchive(t *testing.T) {
 			wantError:    false,
 		},
 		{
-			name:        "Split archive - original name found",
+			name:        "Split archive - original name (flat, backward compat)",
 			archivePath: "archive.7z.001",
 			prefix:      "backups",
 			setupMock: func(m *MockPasswordProvider) {
@@ -192,7 +439,7 @@ func TestGetPasswordForArchive(t *testing.T) {
 			wantError:    false,
 		},
 		{
-			name:        "RAR part format",
+			name:        "RAR part format (flat, backward compat)",
 			archivePath: "backup.part001.rar",
 			prefix:      "archives",
 			setupMock: func(m *MockPasswordProvider) {
@@ -202,7 +449,7 @@ func TestGetPasswordForArchive(t *testing.T) {
 			wantError:    false,
 		},
 		{
-			name:        "RAR old format",
+			name:        "RAR old format (flat, backward compat)",
 			archivePath: "data.r00",
 			prefix:      "archives",
 			setupMock: func(m *MockPasswordProvider) {
@@ -212,7 +459,7 @@ func TestGetPasswordForArchive(t *testing.T) {
 			wantError:    false,
 		},
 		{
-			name:        "Edge case - year suffix fallback doesn't match normal split",
+			name:        "Edge case - year suffix",
 			archivePath: "backup.2024",
 			prefix:      "yearly",
 			setupMock: func(m *MockPasswordProvider) {
@@ -221,7 +468,6 @@ func TestGetPasswordForArchive(t *testing.T) {
 			wantPassword: []byte("year_pass"),
 			wantError:    false,
 		},
-
 		{
 			name:        "Not found - returns error",
 			archivePath: "missing.7z",
@@ -240,7 +486,7 @@ func TestGetPasswordForArchive(t *testing.T) {
 			wantError:    false,
 		},
 		{
-			name:        "Case insensitive - uppercase",
+			name:        "Case insensitive - uppercase split (flat, backward compat)",
 			archivePath: "ARCHIVE.7Z.001",
 			prefix:      "backups",
 			setupMock: func(m *MockPasswordProvider) {
@@ -314,7 +560,30 @@ func TestPasswordNotFoundError(t *testing.T) {
 	}
 }
 
-// Benchmark tests
+func TestMultiMatchError(t *testing.T) {
+	err := &MultiMatchError{
+		Basename: "backup.7z",
+		Candidates: []EntryCandidate{
+			{EntryPath: "backups/backup.7z (a3b2c1d0)", Title: "backup.7z (a3b2c1d0)", LastKnownPath: "/cloud/backup.7z"},
+			{EntryPath: "backups/backup.7z (f1e2d3c4)", Title: "backup.7z (f1e2d3c4)", LastKnownPath: "/local/backup.7z"},
+		},
+	}
+
+	if !IsMultiMatch(err) {
+		t.Error("IsMultiMatch should return true")
+	}
+	if IsMultiMatch(errors.New("other")) {
+		t.Error("IsMultiMatch should return false for other errors")
+	}
+	if err.Error() == "" {
+		t.Error("Error message is empty")
+	}
+}
+
+// -------------------------------------------------------------------
+// Benchmarks
+// -------------------------------------------------------------------
+
 func BenchmarkNormalizeArchiveName(b *testing.B) {
 	testCases := []string{
 		"archive.7z",
@@ -334,7 +603,7 @@ func BenchmarkNormalizeArchiveName(b *testing.B) {
 
 func BenchmarkGetPasswordForArchive(b *testing.B) {
 	mock := NewMockPasswordProvider()
-	mock.SetPassword("backups/archive.7z", []byte("password"))
+	addUUIDEntry(mock, "backups", "archive.7z", "a3b2c1d0", "/home/user/archive.7z", []byte("password"))
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {

@@ -33,12 +33,8 @@ func runList(cmd *cobra.Command, args []string) error {
 	kp := keepass.New(cfg.General.KdbxPath)
 	defer kp.Close()
 
-	// Use the fallback strategy to find the password:
-	// 1. Normalized name (e.g., archive.7z.001 -> archive.7z)
-	// 2. Original filename
-	// 3. Base name without extension (for split archives)
 	fmt.Printf("Fetching password for '%s'...\n", archivePath)
-	password, _, err := GetPasswordForArchive(kp, cfg.General.DefaultGroup, archivePath)
+	password, entryPath, needsMigration, err := resolvePassword(kp, cfg.General.DefaultGroup, archivePath)
 	if err != nil {
 		if IsPasswordNotFound(err) {
 			return fmt.Errorf("failed to get password (is the entry in '%s'?): %w", cfg.General.DefaultGroup, err)
@@ -47,16 +43,29 @@ func runList(cmd *cobra.Command, args []string) error {
 	}
 
 	// 7z l archive.7z — password is sent via PTY when 7z prompts for it
-	sevenZipArgs := []string{"l", archivePath}
-	err = sevenzip.Run(cfg.SevenZip.BinaryPath, password, sevenZipArgs)
+	fmt.Printf("Listing '%s'...\n", archivePath)
+	runErr := sevenzip.Run(cfg.SevenZip.BinaryPath, password, []string{"l", archivePath})
 
+	if runErr == nil && needsMigration {
+		// Migrate while password bytes are still valid (BEFORE zeroing)
+		lastKnownPath := entryPath
+		if lk, e := kp.GetAttribute(entryPath, "Username"); e == nil && lk != "" {
+			lastKnownPath = lk
+		}
+		if _, e := migrateEntry(kp, cfg.General.DefaultGroup, entryPath, password, lastKnownPath); e != nil {
+			fmt.Printf("Note: could not migrate entry to new format: %v\n", e)
+		} else {
+			fmt.Println("(Entry migrated to new format.)")
+		}
+	}
+
+	// Zero password after all uses
 	for i := range password {
 		password[i] = 0
 	}
 
-	if err != nil {
-		return fmt.Errorf("list failed: %w", err)
+	if runErr != nil {
+		return fmt.Errorf("list failed: %w", runErr)
 	}
-
 	return nil
 }

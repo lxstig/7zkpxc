@@ -3,6 +3,7 @@ package keepass
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -212,7 +213,7 @@ func (c *Client) Search(query string) ([]string, error) {
 
 	var outBuf bytes.Buffer
 	cmd.Stdout = &outBuf
-	cmd.Stderr = os.Stderr
+	cmd.Stderr = io.Discard // suppress "Enter password to unlock" prompt spam
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -236,6 +237,8 @@ func (c *Client) Search(query string) ([]string, error) {
 	var results []string
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
+		// Strip leading slash — keepassxc-cli ls/search sometimes emits absolute paths
+		line = strings.TrimPrefix(line, "/")
 		// keepassxc-cli search sometimes outputs "Database unlocked" or other info, filter them
 		if line != "" && !strings.Contains(strings.ToLower(line), "database") {
 			results = append(results, line)
@@ -251,7 +254,9 @@ func (c *Client) AddEntry(group, title string, password []byte, username string,
 		return err
 	}
 
-	_ = c.Mkdir(group)
+	if err := c.Mkdir(group); err != nil {
+		return fmt.Errorf("failed to create KeePass group '%s': %w", group, err)
+	}
 
 	fullPath := group
 	if !strings.HasSuffix(fullPath, "/") {
@@ -338,7 +343,7 @@ func (c *Client) GetPassword(entryPath string) ([]byte, error) {
 
 	var outBuf bytes.Buffer
 	cmd.Stdout = &outBuf
-	cmd.Stderr = os.Stderr
+	cmd.Stderr = io.Discard // suppress "Enter password to unlock" prompt spam
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -383,7 +388,7 @@ func (c *Client) GetAttribute(entryPath, attribute string) (string, error) {
 
 	var outBuf bytes.Buffer
 	cmd.Stdout = &outBuf
-	cmd.Stderr = os.Stderr
+	cmd.Stderr = io.Discard // suppress "Enter password to unlock" prompt spam
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

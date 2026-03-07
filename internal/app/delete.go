@@ -38,7 +38,7 @@ func runDelete(cmd *cobra.Command, args []string) error {
 	// chain as x/l: exact path → split normalization → global search.
 	// We discard the password bytes immediately.
 	fmt.Printf("Looking up entry for '%s'...\n", archivePath)
-	password, entryPath, err := GetPasswordForArchive(kp, cfg.General.DefaultGroup, archivePath)
+	password, entryPath, _, err := resolvePassword(kp, cfg.General.DefaultGroup, archivePath)
 	if err != nil {
 		if IsPasswordNotFound(err) {
 			return fmt.Errorf("no KeePassXC entry found for '%s' in group '%s'", archivePath, cfg.General.DefaultGroup)

@@ -39,7 +39,7 @@ func runExtract(cmd *cobra.Command, args []string) error {
 	// 2. Original filename
 	// 3. Base name without extension (for split archives)
 	fmt.Printf("Fetching password for '%s'...\n", archivePath)
-	password, _, err := GetPasswordForArchive(kp, cfg.General.DefaultGroup, archivePath)
+	password, entryPath, needsMigration, err := resolvePassword(kp, cfg.General.DefaultGroup, archivePath)
 	if err != nil {
 		if IsPasswordNotFound(err) {
 			return fmt.Errorf("failed to get password (is the entry in '%s'?): %w", cfg.General.DefaultGroup, err)
@@ -56,14 +56,28 @@ func runExtract(cmd *cobra.Command, args []string) error {
 		sevenZipArgs = append(sevenZipArgs, "-o"+outputDir)
 	}
 
-	err = sevenzip.Run(cfg.SevenZip.BinaryPath, password, sevenZipArgs)
+	runErr := sevenzip.Run(cfg.SevenZip.BinaryPath, password, sevenZipArgs)
 
+	if runErr == nil && needsMigration {
+		// Migrate while password bytes are still valid (BEFORE zeroing)
+		lastKnownPath := entryPath
+		if lk, e := kp.GetAttribute(entryPath, "Username"); e == nil && lk != "" {
+			lastKnownPath = lk
+		}
+		if _, e := migrateEntry(kp, cfg.General.DefaultGroup, entryPath, password, lastKnownPath); e != nil {
+			fmt.Printf("Note: could not migrate entry to new format: %v\n", e)
+		} else {
+			fmt.Println("(Entry migrated to new format.)")
+		}
+	}
+
+	// Zero password after all uses
 	for i := range password {
 		password[i] = 0
 	}
 
-	if err != nil {
-		return fmt.Errorf("extraction failed: %w", err)
+	if runErr != nil {
+		return fmt.Errorf("extraction failed: %w", runErr)
 	}
 
 	fmt.Println("Success! Archive extracted.")
