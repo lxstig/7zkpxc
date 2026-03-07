@@ -198,17 +198,73 @@ func IsMultiMatch(err error) bool {
 // Password lookup
 // -------------------------------------------------------------------
 
-// GetPasswordForArchive attempts to find the password for an archive.
-// Lookup chain:
-//  1. Search by basename (new UUID format):         "basename (uuid8)"
-//     — Single hit → return immediately.
-//     — Multiple hits → return MultiMatchError so caller can prompt.
-//  2. Backward compat: encoded exact path           "%2Fhome%2F...%2Farchive.7z"
-//  3. Backward compat: old flat basename            "archive.7z"
-//  4. Split archive fallbacks (for each of the above):
-//     a. Search by NormalizedName (new UUID format)
-//     b. Encoded normalized path (backward compat)
-//     c. Old flat normalized name (backward compat)
+// collectCandidates searches keepassxc for entries matching basename under
+// the given group prefix. It handles both new UUID-format titles
+// ("basename (uuid8)") and old-format titles (encoded path, flat basename).
+//
+// keepassxc-cli search does prefix/exact title matching rather than arbitrary
+// substring, so two search patterns are tried:
+//   - "basename ("  → matches UUID-format titles
+//   - "basename"    → matches old encoded-path and flat-basename titles
+//
+// For old-format results the Username field is used to confirm the basename.
+func collectCandidates(kp PasswordProvider, prefix, basename string) ([]EntryCandidate, error) {
+	seen := make(map[string]bool)
+	var allResults []string
+	for _, pattern := range []string{basename + " (", basename} {
+		results, _ := kp.Search(pattern)
+		for _, res := range results {
+			res = filepath.ToSlash(res)
+			if !seen[res] {
+				seen[res] = true
+				allResults = append(allResults, res)
+			}
+		}
+	}
+
+	prefixSlash := filepath.ToSlash(prefix) + "/"
+	var candidates []EntryCandidate
+	for _, res := range allResults {
+		if prefix != "" && !strings.HasPrefix(res, prefixSlash) {
+			continue
+		}
+		title := res
+		if prefix != "" {
+			title = strings.TrimPrefix(res, prefixSlash)
+		}
+		if c, ok := classifyCandidate(kp, res, title, basename); ok {
+			candidates = append(candidates, c)
+		}
+	}
+	return candidates, nil
+}
+
+// classifyCandidate decides whether a keepassxc search result belongs to the
+// target basename and returns an EntryCandidate if it does.
+func classifyCandidate(kp PasswordProvider, entryPath, title, basename string) (EntryCandidate, bool) {
+	// New UUID format: title = "basename (uuid8)"
+	if b, _, ok := parseEntryTitle(title); ok {
+		if b != basename {
+			return EntryCandidate{}, false
+		}
+		lastKnownPath, _ := kp.GetAttribute(entryPath, "Username")
+		return EntryCandidate{EntryPath: entryPath, Title: title, LastKnownPath: lastKnownPath}, true
+	}
+
+	// Old format: verify via Username (last-known absolute path)
+	lastKnownPath, err := kp.GetAttribute(entryPath, "Username")
+	if err == nil && filepath.Base(lastKnownPath) == basename {
+		return EntryCandidate{EntryPath: entryPath, Title: title, LastKnownPath: lastKnownPath}, true
+	}
+
+	// Oldest flat-basename format: title IS the basename
+	if title == basename {
+		lastKnownPath, _ = kp.GetAttribute(entryPath, "Username")
+		return EntryCandidate{EntryPath: entryPath, Title: title, LastKnownPath: lastKnownPath}, true
+	}
+	return EntryCandidate{}, false
+}
+
 func GetPasswordForArchive(kp PasswordProvider, entryPathPrefix, archivePath string) ([]byte, string, error) {
 	if kp == nil {
 		return nil, "", fmt.Errorf("password provider is nil")
@@ -243,91 +299,14 @@ func GetPasswordForArchive(kp PasswordProvider, entryPathPrefix, archivePath str
 		return nil, "", false
 	}
 
-	// searchByBasename searches for entries matching the given basename.
-	// It accepts both new UUID-format titles ("basename (uuid8)") and old-format
-	// titles (encoded path or flat basename) found via keepassxc-cli search.
-	//
-	// keepassxc-cli search uses title-exact/prefix matching, not arbitrary substring.
-	// For UUID-format titles ("test.7z (6031dd3b)") searching "test.7z" alone does not
-	// match — we must also search "test.7z (" (including the space+paren prefix of the
-	// UUID suffix) to reliably find UUID-format entries.
-	// For old-format entries the Username field verifies the basename.
-	searchByBasename := func(basename string) ([]byte, string, error) {
-		// Search with two patterns — collect deduped results:
-		//   1. "basename ("  → finds new UUID-format entries
-		//   2. plain basename → finds old encoded-path and flat-basename entries
-		seen := make(map[string]bool)
-		var allResults []string
-		for _, pattern := range []string{basename + " (", basename} {
-			results, _ := kp.Search(pattern)
-			for _, res := range results {
-				res = filepath.ToSlash(res)
-				if !seen[res] {
-					seen[res] = true
-					allResults = append(allResults, res)
-				}
-			}
-		}
-
-		// Filter to our group prefix and classify each result
-		var candidates []EntryCandidate
-		for _, res := range allResults {
-			// Must be inside our group
-			if prefix != "" && !strings.HasPrefix(res, filepath.ToSlash(prefix)+"/") {
-				continue
-			}
-
-			// Extract title part (after group prefix)
-			title := res
-			if prefix != "" {
-				title = strings.TrimPrefix(res, filepath.ToSlash(prefix)+"/")
-			}
-
-			// Case 1: new UUID format — basename must match exactly
-			if b, _, ok := parseEntryTitle(title); ok {
-				if b != basename {
-					continue
-				}
-				lastKnownPath, _ := kp.GetAttribute(res, "Username")
-				candidates = append(candidates, EntryCandidate{
-					EntryPath:     res,
-					Title:         title,
-					LastKnownPath: lastKnownPath,
-				})
-				continue
-			}
-
-			// Case 2: old format (encoded path or flat basename) — verify via Username.
-			// The search already found it as a substring match; confirm the basename
-			// by checking the stored Username (last-known absolute path).
-			lastKnownPath, err := kp.GetAttribute(res, "Username")
-			if err == nil && filepath.Base(lastKnownPath) == basename {
-				candidates = append(candidates, EntryCandidate{
-					EntryPath:     res,
-					Title:         title,
-					LastKnownPath: lastKnownPath,
-				})
-				continue
-			}
-
-			// Old flat-basename format: title IS the basename (no path, no encoding)
-			if title == basename {
-				lastKnownPath, _ = kp.GetAttribute(res, "Username")
-				candidates = append(candidates, EntryCandidate{
-					EntryPath:     res,
-					Title:         title,
-					LastKnownPath: lastKnownPath,
-				})
-			}
-		}
-
+	searchAndTry := func(basename string) ([]byte, string, error) {
+		candidates, _ := collectCandidates(kp, prefix, basename)
 		switch len(candidates) {
 		case 0:
-			return nil, "", nil // not found via this method
+			return nil, "", nil
 		case 1:
-			pass, entryPath, ok := tryPath(candidates[0].EntryPath)
-			if ok {
-				return pass, entryPath, nil
+			if pass, found, ok := tryPath(candidates[0].EntryPath); ok {
+				return pass, found, nil
 			}
 			return nil, "", nil
 		default:
@@ -335,49 +314,32 @@ func GetPasswordForArchive(kp PasswordProvider, entryPathPrefix, archivePath str
 		}
 	}
 
-	// --- 1. New UUID format: search by basename ---
+	// 1. Search by basename (UUID format primary, old format fallback)
 	searchTarget := filepath.Base(archivePath)
-	pass, found, searchErr := searchByBasename(searchTarget)
-	if searchErr != nil {
-		return nil, "", searchErr // MultiMatchError — caller handles prompt
+	if pass, found, err := searchAndTry(searchTarget); err != nil || pass != nil {
+		return pass, found, err
 	}
-	if pass != nil {
+
+	// 2. Backward compat: encoded exact path
+	if pass, found, ok := tryPath(buildPath(encodeArchivePath(absPath))); ok {
 		return pass, found, nil
 	}
 
-	// --- 2. Backward compat: encoded exact path ---
-	encodedPath := buildPath(encodeArchivePath(absPath))
-	if pass, found, ok := tryPath(encodedPath); ok {
+	// 3. Backward compat: old flat basename
+	if pass, found, ok := tryPath(buildPath(filepath.Base(archivePath))); ok {
 		return pass, found, nil
 	}
 
-	// --- 3. Backward compat: old flat basename ---
-	oldPath := buildPath(filepath.Base(archivePath))
-	if pass, found, ok := tryPath(oldPath); ok {
-		return pass, found, nil
-	}
-
-	// --- 4. Split archive fallbacks ---
+	// 4. Split archive fallbacks
 	if info.IsSplit {
-		// 4a. New UUID format for normalized name
-		pass, found, searchErr = searchByBasename(info.NormalizedName)
-		if searchErr != nil {
-			return nil, "", searchErr
+		if pass, found, err := searchAndTry(info.NormalizedName); err != nil || pass != nil {
+			return pass, found, err
 		}
-		if pass != nil {
-			return pass, found, nil
-		}
-
-		// 4b. Encoded normalized path (backward compat)
 		absNorm := filepath.Join(filepath.Dir(absPath), info.NormalizedName)
-		encodedNorm := buildPath(encodeArchivePath(absNorm))
-		if pass, found, ok := tryPath(encodedNorm); ok {
+		if pass, found, ok := tryPath(buildPath(encodeArchivePath(absNorm))); ok {
 			return pass, found, nil
 		}
-
-		// 4c. Old flat normalized name (backward compat)
-		oldNorm := buildPath(info.NormalizedName)
-		if pass, found, ok := tryPath(oldNorm); ok {
+		if pass, found, ok := tryPath(buildPath(info.NormalizedName)); ok {
 			return pass, found, nil
 		}
 	}
@@ -387,6 +349,9 @@ func GetPasswordForArchive(kp PasswordProvider, entryPathPrefix, archivePath str
 		Tried:       tried,
 	}
 }
+
+
+
 
 // -------------------------------------------------------------------
 // Interactive multi-match prompt

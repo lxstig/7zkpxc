@@ -96,8 +96,24 @@ func runRename(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to move archive on disk: %w", err)
 	}
 
-	// 6. Add new KeePass entry with UUID title (rollback file move on failure)
-	//    New UUID is generated — rename = new identity.
+	// 6+7. Update KeePass: add new entry, rollback file move on failure, delete old.
+	if err := applyRenameKeePass(kp, cfg.General.DefaultGroup, oldKeePassPath, absOld, absNew, password, srcInfo, crossDevice); err != nil {
+		return err
+	}
+
+	fmt.Println("Done. Archive moved and KeePassXC entry updated.")
+	return nil
+}
+
+// applyRenameKeePass adds a new UUID-titled KeePass entry for the destination
+// archive, rolls back the file move if that fails, then removes the old entry.
+func applyRenameKeePass(
+	kp *keepass.Client,
+	group, oldKeePassPath, absOld, absNew string,
+	password []byte,
+	srcInfo os.FileInfo,
+	crossDevice bool,
+) error {
 	newUUID8, err := generateUUID8()
 	if err != nil {
 		return fmt.Errorf("failed to generate entry UUID: %w", err)
@@ -105,45 +121,32 @@ func runRename(cmd *cobra.Command, args []string) error {
 	newEntryTitle := makeEntryTitle(filepath.Base(absNew), newUUID8)
 	fmt.Printf("Updating KeePassXC entry (title: %s)...\n", newEntryTitle)
 
-	err = kp.AddEntry(
-		cfg.General.DefaultGroup,
-		newEntryTitle,
-		password,
-		absNew,                             // Username holds the absolute path
-		"https://github.com/lxstig/7zkpxc", // URL
-	)
-	if err != nil {
-		// Rollback: move the file back
+	if err := kp.AddEntry(group, newEntryTitle, password, absNew, "https://github.com/lxstig/7zkpxc"); err != nil {
 		fmt.Printf("KeePass update failed, rolling back file move...\n")
-		var rbErr error
-		if crossDevice {
-			// Copy was already done; source was removed — restore by moving back
-			rbErr = moveFileCopy(absNew, absOld, srcInfo)
-		} else {
-			rbErr = os.Rename(absNew, absOld)
-		}
+		rbErr := rollbackMove(absOld, absNew, srcInfo, crossDevice)
 		if rbErr != nil {
 			return fmt.Errorf("keepassxc-cli add failed: %w\nROLLBACK FAILED (file is at %s): %v", err, absNew, rbErr)
 		}
 		return fmt.Errorf("failed to create new KeePass entry (file move rolled back): %w", err)
 	}
 
-	// 7. Delete old KeePass entry (non-fatal: new entry and file are already correct)
 	fmt.Printf("Cleaning up old KeePass entry ('%s')...\n", oldKeePassPath)
 	if err := kp.DeleteEntry(oldKeePassPath); err != nil {
 		fmt.Printf("Warning: could not delete old entry '%s': %v\n", oldKeePassPath, err)
 		fmt.Println("The archive was moved and the new entry was created successfully.")
 		fmt.Println("You may want to delete the old entry manually from KeePassXC.")
-		return nil
 	}
-
-	fmt.Println("Done. Archive moved and KeePassXC entry updated.")
 	return nil
 }
 
-// moveFile moves src to dst. It tries os.Rename first; if that fails with
-// EXDEV (cross-device link), it falls back to a copy+delete. Returns whether
-// a cross-device copy was performed, so the caller can roll back correctly.
+// rollbackMove undoes a file move by moving dst back to src.
+func rollbackMove(src, dst string, srcInfo os.FileInfo, crossDevice bool) error {
+	if crossDevice {
+		return moveFileCopy(dst, src, srcInfo)
+	}
+	return os.Rename(dst, src)
+}
+
 func moveFile(src, dst string, srcInfo os.FileInfo) (crossDevice bool, err error) {
 	if err := os.Rename(src, dst); err == nil {
 		return false, nil
