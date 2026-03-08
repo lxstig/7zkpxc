@@ -265,6 +265,51 @@ func classifyCandidate(kp PasswordProvider, entryPath, title, basename string) (
 	return EntryCandidate{}, false
 }
 
+// passwordLookup holds state for a single GetPasswordForArchive call and
+// provides helper methods to keep the main function's cyclomatic complexity low.
+type passwordLookup struct {
+	kp     PasswordProvider
+	prefix string
+	tried  []string
+}
+
+func (l *passwordLookup) buildPath(title string) string {
+	if l.prefix == "" {
+		return title
+	}
+	return l.prefix + "/" + title
+}
+
+func (l *passwordLookup) tryPath(entryPath string) ([]byte, string, bool) {
+	l.tried = append(l.tried, entryPath)
+	pass, err := l.kp.GetPassword(entryPath)
+	if err == nil {
+		return pass, entryPath, true
+	}
+	return nil, "", false
+}
+
+func (l *passwordLookup) searchAndTry(basename string) ([]byte, string, error) {
+	candidates, _ := collectCandidates(l.kp, l.prefix, basename)
+	switch len(candidates) {
+	case 0:
+		return nil, "", nil
+	case 1:
+		if pass, found, ok := l.tryPath(candidates[0].EntryPath); ok {
+			return pass, found, nil
+		}
+		return nil, "", nil
+	default:
+		return nil, "", &MultiMatchError{Basename: basename, Candidates: candidates}
+	}
+}
+
+// GetPasswordForArchive attempts to find the password for an archive.
+// Lookup chain:
+//  1. Search by basename (UUID format primary, old format fallback via collectCandidates)
+//  2. Backward compat: encoded exact path  "%2Fhome%2F...%2Farchive.7z"
+//  3. Backward compat: old flat basename   "archive.7z"
+//  4. Split archive fallbacks for each of the above
 func GetPasswordForArchive(kp PasswordProvider, entryPathPrefix, archivePath string) ([]byte, string, error) {
 	if kp == nil {
 		return nil, "", fmt.Errorf("password provider is nil")
@@ -274,84 +319,49 @@ func GetPasswordForArchive(kp PasswordProvider, entryPathPrefix, archivePath str
 	}
 
 	info := AnalyzeArchive(archivePath)
-
 	absPath, err := filepath.Abs(archivePath)
 	if err != nil {
 		absPath = archivePath
 	}
 
-	prefix := entryPathPrefix
-	tried := make([]string, 0, 6)
-
-	buildPath := func(title string) string {
-		if prefix == "" {
-			return title
-		}
-		return prefix + "/" + title
-	}
-
-	tryPath := func(entryPath string) ([]byte, string, bool) {
-		tried = append(tried, entryPath)
-		pass, err := kp.GetPassword(entryPath)
-		if err == nil {
-			return pass, entryPath, true
-		}
-		return nil, "", false
-	}
-
-	searchAndTry := func(basename string) ([]byte, string, error) {
-		candidates, _ := collectCandidates(kp, prefix, basename)
-		switch len(candidates) {
-		case 0:
-			return nil, "", nil
-		case 1:
-			if pass, found, ok := tryPath(candidates[0].EntryPath); ok {
-				return pass, found, nil
-			}
-			return nil, "", nil
-		default:
-			return nil, "", &MultiMatchError{Basename: basename, Candidates: candidates}
-		}
-	}
+	l := &passwordLookup{kp: kp, prefix: entryPathPrefix}
 
 	// 1. Search by basename (UUID format primary, old format fallback)
-	searchTarget := filepath.Base(archivePath)
-	if pass, found, err := searchAndTry(searchTarget); err != nil || pass != nil {
+	if pass, found, err := l.searchAndTry(filepath.Base(archivePath)); err != nil || pass != nil {
 		return pass, found, err
 	}
 
 	// 2. Backward compat: encoded exact path
-	if pass, found, ok := tryPath(buildPath(encodeArchivePath(absPath))); ok {
+	if pass, found, ok := l.tryPath(l.buildPath(encodeArchivePath(absPath))); ok {
 		return pass, found, nil
 	}
 
 	// 3. Backward compat: old flat basename
-	if pass, found, ok := tryPath(buildPath(filepath.Base(archivePath))); ok {
+	if pass, found, ok := l.tryPath(l.buildPath(filepath.Base(archivePath))); ok {
 		return pass, found, nil
 	}
 
 	// 4. Split archive fallbacks
 	if info.IsSplit {
-		if pass, found, err := searchAndTry(info.NormalizedName); err != nil || pass != nil {
-			return pass, found, err
-		}
-		absNorm := filepath.Join(filepath.Dir(absPath), info.NormalizedName)
-		if pass, found, ok := tryPath(buildPath(encodeArchivePath(absNorm))); ok {
-			return pass, found, nil
-		}
-		if pass, found, ok := tryPath(buildPath(info.NormalizedName)); ok {
-			return pass, found, nil
-		}
+		return l.splitFallbacks(info, absPath)
 	}
 
-	return nil, "", &PasswordNotFoundError{
-		ArchiveName: info.OriginalName,
-		Tried:       tried,
-	}
+	return nil, "", &PasswordNotFoundError{ArchiveName: info.OriginalName, Tried: l.tried}
 }
 
-
-
+func (l *passwordLookup) splitFallbacks(info ArchiveInfo, absPath string) ([]byte, string, error) {
+	if pass, found, err := l.searchAndTry(info.NormalizedName); err != nil || pass != nil {
+		return pass, found, err
+	}
+	absNorm := filepath.Join(filepath.Dir(absPath), info.NormalizedName)
+	if pass, found, ok := l.tryPath(l.buildPath(encodeArchivePath(absNorm))); ok {
+		return pass, found, nil
+	}
+	if pass, found, ok := l.tryPath(l.buildPath(info.NormalizedName)); ok {
+		return pass, found, nil
+	}
+	return nil, "", &PasswordNotFoundError{ArchiveName: info.OriginalName, Tried: l.tried}
+}
 
 // -------------------------------------------------------------------
 // Interactive multi-match prompt
