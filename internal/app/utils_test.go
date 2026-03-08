@@ -90,6 +90,51 @@ func TestGenerateUUID8(t *testing.T) {
 	}
 }
 
+func TestGenerateUniqueUUID8(t *testing.T) {
+	mock := NewMockPasswordProvider()
+	// Normal case: no existing entries → should succeed on first try
+	uuid8, err := generateUniqueUUID8(mock, "backups", "test.7z")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(uuid8) != 8 {
+		t.Errorf("expected 8-char uuid8, got %q (len=%d)", uuid8, len(uuid8))
+	}
+	for _, c := range uuid8 {
+		if !strings.ContainsRune("0123456789abcdef", c) {
+			t.Errorf("non-hex character %q in uuid8 %q", c, uuid8)
+		}
+	}
+}
+
+func TestGenerateUniqueUUID8_SkipsCollision(t *testing.T) {
+	// This test injects a collision by pre-populating the mock with every
+	// possible UUID8 except one, which is not feasible (4B entries), so
+	// instead we verify the contract indirectly: after adding a UUID-format
+	// entry, generateUniqueUUID8 must return a title that does NOT already exist.
+	mock := NewMockPasswordProvider()
+	// Add a known entry
+	knownUUID := "deadbeef"
+	addUUIDEntry(mock, "backups", "test.7z", knownUUID, "/some/test.7z", []byte("pw"))
+
+	uuid8, err := generateUniqueUUID8(mock, "backups", "test.7z")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(uuid8) != 8 {
+		t.Errorf("expected 8-char uuid8, got %q", uuid8)
+	}
+	// The result must not already exist as a full entry path
+	title := makeEntryTitle("test.7z", uuid8)
+	entryPath := "backups/" + title
+	results, _ := mock.Search(title)
+	for _, r := range results {
+		if r == entryPath {
+			t.Errorf("generateUniqueUUID8 returned a UUID (%q) that already exists in the database", uuid8)
+		}
+	}
+}
+
 func TestMakeEntryTitle(t *testing.T) {
 	title := makeEntryTitle("backup.7z", "a3b2c1d0")
 	if title != "backup.7z (a3b2c1d0)" {

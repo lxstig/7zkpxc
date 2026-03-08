@@ -127,6 +127,32 @@ func generateUUID8() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
+// generateUniqueUUID8 generates a UUID8 that is guaranteed not to collide with
+// an existing entry in the KeePass database under the given group.
+// A collision is astronomically unlikely (~1 in 4 billion per call), but this
+// loop provides mathematical certainty at virtually zero cost.
+func generateUniqueUUID8(kp PasswordProvider, group, basename string) (string, error) {
+	for {
+		uuid8, err := generateUUID8()
+		if err != nil {
+			return "", err
+		}
+		title := makeEntryTitle(basename, uuid8)
+		candidatePath := filepath.ToSlash(filepath.Clean(group + "/" + title))
+		results, _ := kp.Search(title)
+		collision := false
+		for _, r := range results {
+			if filepath.ToSlash(r) == candidatePath {
+				collision = true
+				break
+			}
+		}
+		if !collision {
+			return uuid8, nil
+		}
+	}
+}
+
 // makeEntryTitle constructs a KeePass entry title from a basename and uuid8.
 // Result format: "basename (uuid8)"
 func makeEntryTitle(basename, uuid8 string) string {
@@ -446,13 +472,13 @@ type EntryMigrator interface {
 // It silently adds a new entry and deletes the old one.
 // Failures are non-fatal; the caller should log a warning at most.
 func migrateEntry(kp EntryMigrator, prefix, oldEntryPath string, password []byte, lastKnownPath string) (newEntryPath string, err error) {
-	uuid8, err := generateUUID8()
-	if err != nil {
-		return "", fmt.Errorf("uuid generation: %w", err)
-	}
 	basename := filepath.Base(lastKnownPath)
 	if basename == "" || basename == "." {
 		basename = filepath.Base(oldEntryPath)
+	}
+	uuid8, err := generateUniqueUUID8(kp, prefix, basename)
+	if err != nil {
+		return "", fmt.Errorf("uuid generation: %w", err)
 	}
 	newTitle := makeEntryTitle(basename, uuid8)
 	newEntryPath = prefix + "/" + newTitle

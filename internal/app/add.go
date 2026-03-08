@@ -110,7 +110,7 @@ func runAddCreate(
 		return fmt.Errorf("failed to resolve archive path: %w", err)
 	}
 
-	uuid8, err := generateUUID8()
+	uuid8, err := generateUniqueUUID8(kp, cfg.General.DefaultGroup, filepath.Base(absArchivePath))
 	if err != nil {
 		return fmt.Errorf("failed to generate entry UUID: %w", err)
 	}

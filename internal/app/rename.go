@@ -114,7 +114,7 @@ func applyRenameKeePass(
 	srcInfo os.FileInfo,
 	crossDevice bool,
 ) error {
-	newUUID8, err := generateUUID8()
+	newUUID8, err := generateUniqueUUID8(kp, group, filepath.Base(absNew))
 	if err != nil {
 		return fmt.Errorf("failed to generate entry UUID: %w", err)
 	}
