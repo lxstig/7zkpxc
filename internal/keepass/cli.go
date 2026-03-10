@@ -94,7 +94,9 @@ func (c *Client) EnsureUnlocked() error {
 		return nil
 	}
 
-	fmt.Printf("Enter password for %s: ", c.DatabasePath)
+	base := filepath.Base(c.DatabasePath)
+	dir := c.DatabasePath[:len(c.DatabasePath)-len(base)]
+	fmt.Printf("Enter password for %s\033[32m%s\033[0m: ", dir, base)
 	bytePassword, err := term.ReadPassword(int(syscall.Stdin))
 	if err != nil {
 		return err
