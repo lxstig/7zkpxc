@@ -41,12 +41,27 @@ func RunWithTimeout(ctx context.Context, binaryPath string, password []byte, arg
 
 	done := make(chan error, 1)
 
+	// passwordSent is closed once the password has been written to the PTY.
+	// The stdin bridge goroutine waits for this signal before forwarding user
+	// input, ensuring the user cannot accidentally type before the password
+	// prompt is handled.
+	passwordSent := make(chan struct{})
+
+	// stdin bridge: forwards user keystrokes to the PTY after the password has
+	// been sent. This allows 7z's interactive prompts (e.g.
+	// "(Y)es / (N)o / (A)lways / (S)kip all / (Q)uit?") to be answered.
+	go func() {
+		<-passwordSent
+		_, _ = io.Copy(ptmx, os.Stdin)
+	}()
+
 	// Output processor goroutine: intercepts password prompts, suppresses echo
 	go func() {
 		defer close(done)
 
 		buf := make([]byte, 32*1024) // 32 KB — large enough to avoid per-byte reads
 		suppressUntilNewline := false
+		sentPassword := false
 
 		for {
 			n, err := ptmx.Read(buf)
@@ -66,6 +81,12 @@ func RunWithTimeout(ctx context.Context, binaryPath string, password []byte, arg
 					_, _ = ptmx.Write(password)
 					_, _ = ptmx.Write([]byte("\n"))
 					suppressUntilNewline = true
+
+					// Unblock the stdin bridge on first password send only
+					if !sentPassword {
+						sentPassword = true
+						close(passwordSent)
+					}
 					continue
 				}
 
@@ -91,6 +112,12 @@ func RunWithTimeout(ctx context.Context, binaryPath string, password []byte, arg
 				break
 			}
 		}
+
+		// If the process exited before a password prompt was ever seen
+		// (e.g. unencrypted archive), unblock the stdin bridge so it exits cleanly.
+		if !sentPassword {
+			close(passwordSent)
+		}
 	}()
 
 	errWait := cmd.Wait()
@@ -103,3 +130,4 @@ func RunWithTimeout(ctx context.Context, binaryPath string, password []byte, arg
 
 	return errWait
 }
+
