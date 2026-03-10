@@ -505,6 +505,27 @@ type PasswordProvider interface {
 	GetPassword(key string) ([]byte, error)
 	GetAttribute(entryPath, attribute string) (string, error)
 	Search(query string) ([]string, error)
+	UpdateEntryUsername(entryPath, username string) error
+}
+
+// -------------------------------------------------------------------
+// Path staleness detection and update
+// -------------------------------------------------------------------
+
+// updatePathIfMoved checks whether the Username field (last known path) in the
+// KeePass entry matches absArchivePath. If they differ, it silently updates
+// the Username field so the GUI and CLI both show the current location.
+// Always non-fatal: failures are printed as a Note, never returned.
+func updatePathIfMoved(kp PasswordProvider, entryPath, absArchivePath string) {
+	current, err := kp.GetAttribute(entryPath, "Username")
+	if err != nil || current == absArchivePath {
+		return
+	}
+	if err := kp.UpdateEntryUsername(entryPath, absArchivePath); err != nil {
+		fmt.Printf("Note: could not update location in KeePassXC: %v\n", err)
+		return
+	}
+	fmt.Println("(Location updated in KeePassXC.)")
 }
 
 // -------------------------------------------------------------------

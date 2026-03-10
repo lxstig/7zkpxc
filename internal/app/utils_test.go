@@ -62,8 +62,76 @@ func (m *MockPasswordProvider) Search(query string) ([]string, error) {
 	return results, nil
 }
 
+func (m *MockPasswordProvider) UpdateEntryUsername(entryPath, username string) error {
+	m.calls = append(m.calls, "update-username:"+entryPath+":"+username)
+	if m.attributes[entryPath] == nil {
+		m.attributes[entryPath] = make(map[string]string)
+	}
+	m.attributes[entryPath]["Username"] = username
+	return nil
+}
+
 func (m *MockPasswordProvider) GetCalls() []string {
 	return m.calls
+}
+
+// -------------------------------------------------------------------
+// updatePathIfMoved
+// -------------------------------------------------------------------
+
+func TestUpdatePathIfMoved_SamePath_NoUpdate(t *testing.T) {
+	mock := NewMockPasswordProvider()
+	entryPath := "backups/test.7z (deadbeef)"
+	mock.SetAttribute(entryPath, "Username", "/home/user/test.7z")
+
+	updatePathIfMoved(mock, entryPath, "/home/user/test.7z")
+
+	// UpdateEntryUsername must NOT have been called
+	for _, c := range mock.GetCalls() {
+		if strings.HasPrefix(c, "update-username:") {
+			t.Errorf("updatePathIfMoved called UpdateEntryUsername when path was unchanged: %s", c)
+		}
+	}
+}
+
+func TestUpdatePathIfMoved_PathChanged_UpdatesCalled(t *testing.T) {
+	mock := NewMockPasswordProvider()
+	entryPath := "backups/test.7z (deadbeef)"
+	mock.SetAttribute(entryPath, "Username", "/old/path/test.7z")
+
+	updatePathIfMoved(mock, entryPath, "/new/path/test.7z")
+
+	// UpdateEntryUsername must have been called with the new path
+	expected := "update-username:" + entryPath + ":/new/path/test.7z"
+	found := false
+	for _, c := range mock.GetCalls() {
+		if c == expected {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected call %q not found in calls: %v", expected, mock.GetCalls())
+	}
+	// Verify the attribute was actually updated in the mock
+	val, _ := mock.GetAttribute(entryPath, "Username")
+	if val != "/new/path/test.7z" {
+		t.Errorf("Username after update = %q, want %q", val, "/new/path/test.7z")
+	}
+}
+
+func TestUpdatePathIfMoved_NoUsername_NoUpdate(t *testing.T) {
+	mock := NewMockPasswordProvider()
+	entryPath := "backups/test.7z (deadbeef)"
+	// Username NOT set → GetAttribute returns error → updatePathIfMoved should be a no-op
+
+	updatePathIfMoved(mock, entryPath, "/any/path/test.7z")
+
+	for _, c := range mock.GetCalls() {
+		if strings.HasPrefix(c, "update-username:") {
+			t.Errorf("updatePathIfMoved called UpdateEntryUsername when GetAttribute failed: %s", c)
+		}
+	}
 }
 
 // -------------------------------------------------------------------

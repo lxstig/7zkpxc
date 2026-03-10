@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"path/filepath"
 
 	"github.com/lxstig/7zkpxc/internal/config"
 	"github.com/lxstig/7zkpxc/internal/keepass"
@@ -30,6 +31,11 @@ func runList(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	absPath, err := filepath.Abs(archivePath)
+	if err != nil {
+		absPath = archivePath
+	}
+
 	kp := keepass.New(cfg.General.KdbxPath)
 	defer kp.Close()
 
@@ -52,11 +58,17 @@ func runList(cmd *cobra.Command, args []string) error {
 		if lk, e := kp.GetAttribute(entryPath, "Username"); e == nil && lk != "" {
 			lastKnownPath = lk
 		}
-		if _, e := migrateEntry(kp, cfg.General.DefaultGroup, entryPath, password, lastKnownPath); e != nil {
-			fmt.Printf("Note: could not migrate entry to new format: %v\n", e)
+		var migrateErr error
+		entryPath, migrateErr = migrateEntry(kp, cfg.General.DefaultGroup, entryPath, password, lastKnownPath)
+		if migrateErr != nil {
+			fmt.Printf("Note: could not migrate entry to new format: %v\n", migrateErr)
 		} else {
 			fmt.Println("(Entry migrated to new format.)")
 		}
+	}
+
+	if runErr == nil {
+		updatePathIfMoved(kp, entryPath, absPath)
 	}
 
 	// Zero password after all uses

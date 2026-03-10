@@ -333,6 +333,38 @@ func (c *Client) DeleteEntry(entryPath string) error {
 	return nil
 }
 
+// UpdateEntryUsername updates the Username field (last known path) of an entry.
+func (c *Client) UpdateEntryUsername(entryPath, username string) error {
+	if err := c.EnsureUnlocked(); err != nil {
+		return err
+	}
+
+	cmd := buildCmd("edit", "--username", username, c.DatabasePath, entryPath)
+
+	var outBuf bytes.Buffer
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &outBuf
+
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return err
+	}
+
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+
+	_, _ = stdin.Write(c.getMasterPassword())
+	_, _ = stdin.Write([]byte("\n"))
+	_ = stdin.Close()
+
+	if err := cmd.Wait(); err != nil {
+		return fmt.Errorf("keepassxc-cli edit failed: %s: %s", err, outBuf.String())
+	}
+
+	return nil
+}
+
 // GetPassword retrieves a password for an entry
 func (c *Client) GetPassword(entryPath string) ([]byte, error) {
 	if err := c.EnsureUnlocked(); err != nil {

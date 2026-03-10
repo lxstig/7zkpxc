@@ -204,12 +204,20 @@ func runAddUpdate(
 		if lk, e := kp.GetAttribute(entryPath, "Username"); e == nil && lk != "" {
 			lastKnownPath = lk
 		}
-		if _, e := migrateEntry(kp, cfg.General.DefaultGroup, entryPath, password, lastKnownPath); e != nil {
-			fmt.Printf("Note: could not migrate entry to new format: %v\n", e)
+		var migrateErr error
+		entryPath, migrateErr = migrateEntry(kp, cfg.General.DefaultGroup, entryPath, password, lastKnownPath)
+		if migrateErr != nil {
+			fmt.Printf("Note: could not migrate entry to new format: %v\n", migrateErr)
 		} else {
 			fmt.Println("(Entry migrated to new format.)")
 		}
 	}
+
+	absArchiveName, err := filepath.Abs(archiveName)
+	if err != nil {
+		absArchiveName = archiveName
+	}
+	updatePathIfMoved(kp, entryPath, absArchiveName)
 
 	fmt.Println("Files added to existing archive successfully.")
 	return nil
