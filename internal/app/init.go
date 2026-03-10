@@ -34,7 +34,33 @@ func init() {
 	rootCmd.AddCommand(initCmd)
 }
 
+// kdbxPainter implements readline.Painter to color .kdbx filenames green
+// in the input line. Paint is called on every redraw; it returns the runes
+// that will be written to the terminal (ANSI sequences are safe here because
+// they never enter the internal buffer — only the display output).
+type kdbxPainter struct{}
+
+const (
+	ansiGreen = "\033[32m"
+	ansiReset = "\033[0m"
+)
+
+func (kdbxPainter) Paint(line []rune, _ int) []rune {
+	s := string(line)
+	// Find the last path segment to check its extension
+	last := strings.LastIndex(s, "/")
+	seg := s[last+1:]
+	if !strings.HasSuffix(strings.ToLower(seg), ".kdbx") || seg == "" {
+		return line
+	}
+	// Color only the final segment (the .kdbx filename)
+	colored := s[:last+1] + ansiGreen + seg + ansiReset
+	return []rune(colored)
+}
+
 // fileCompleter implements readline.AutoCompleter for filesystem paths.
+// It only handles SUFFIX appending (chzyer/readline's Do protocol).
+// Case correction for mismatched prefixes is handled via the Listener.
 type fileCompleter struct {
 	filter func(path string, isDir bool) bool
 }
@@ -49,10 +75,8 @@ func (fc *fileCompleter) Do(line []rune, pos int) ([][]rune, int) {
 
 	// Expand ~ at the beginning
 	expanded := input
-	homePrefix := ""
 	if strings.HasPrefix(expanded, "~/") || expanded == "~" {
 		if home, err := os.UserHomeDir(); err == nil {
-			homePrefix = "~/"
 			if expanded == "~" {
 				expanded = home
 			} else {
@@ -69,7 +93,6 @@ func (fc *fileCompleter) Do(line []rune, pos int) ([][]rune, int) {
 		prefix = filepath.Base(expanded)
 	}
 
-	_ = homePrefix
 	return fc.listDir(dir, prefix), len(prefix)
 }
 
@@ -88,7 +111,9 @@ func (fc *fileCompleter) listDir(dir, prefix string) [][]rune {
 			continue
 		}
 
-		if prefix != "" && !strings.HasPrefix(strings.ToLower(name), strings.ToLower(prefix)) {
+		// Case-sensitive prefix match only; case correction is handled by the
+		// Listener (pathCaseListener) which rewrites the buffer before Do runs.
+		if prefix != "" && !strings.HasPrefix(name, prefix) {
 			continue
 		}
 
@@ -100,10 +125,17 @@ func (fc *fileCompleter) listDir(dir, prefix string) [][]rune {
 			continue
 		}
 
+		// Return only the suffix (chzyer/readline appends, never deletes).
+		// For .kdbx files, wrap the suffix in ANSI green so the completion
+		// menu shows them colored. The ANSI codes are stripped from the
+		// readline result before the path is used (see stripANSI below).
 		suffix := name[len(prefix):]
 		if entryIsDir {
 			suffix += "/"
 		} else {
+			if strings.HasSuffix(strings.ToLower(name), ".kdbx") {
+				suffix = ansiGreen + suffix + ansiReset
+			}
 			suffix += " "
 		}
 
@@ -111,6 +143,67 @@ func (fc *fileCompleter) listDir(dir, prefix string) [][]rune {
 	}
 
 	return candidates
+}
+
+// pathCaseListener returns a readline Listener that intercepts the Tab key.
+// When Tab is pressed, it inspects the last path segment the user has typed
+// and, if a case-insensitive match exists on disk with different casing,
+// rewrites the buffer with the correct filesystem casing BEFORE the
+// AutoCompleter's Do() runs (Do sees the corrected line and appends the rest).
+func pathCaseListener() func(line []rune, pos int, key rune) ([]rune, int, bool) {
+	return func(line []rune, pos int, key rune) ([]rune, int, bool) {
+		// Only act on Tab
+		if key != '\t' {
+			return nil, 0, false
+		}
+
+		input := string(line[:pos])
+		if input == "" {
+			return nil, 0, false
+		}
+
+		// Expand ~ if needed
+		expanded := input
+		if strings.HasPrefix(expanded, "~/") || expanded == "~" {
+			if home, err := os.UserHomeDir(); err == nil {
+				if expanded == "~" {
+					expanded = home
+				} else {
+					expanded = filepath.Join(home, expanded[2:])
+				}
+			}
+		}
+
+		// Only correct when input is a partial path (not yet a directory)
+		if isDir(expanded) {
+			return nil, 0, false
+		}
+
+		dir := filepath.Dir(expanded)
+		typedSeg := filepath.Base(expanded)
+
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return nil, 0, false
+		}
+
+		for _, entry := range entries {
+			name := entry.Name()
+			if strings.EqualFold(name, typedSeg) && name != typedSeg {
+				// Found case-insensitive match with different casing;
+				// rewrite just the last segment of the typed input.
+				corrected := input[:len(input)-len(typedSeg)] + name
+				newLine := []rune(corrected)
+				if len(line) > pos {
+					newLine = append(newLine, line[pos:]...)
+				}
+				return newLine, len(corrected), true
+			}
+		}
+
+		// No mismatch found; let readline handle Tab normally
+		return nil, 0, false
+	}
 }
 
 func isDir(path string) bool {
@@ -204,17 +297,17 @@ func runInit() error {
 }
 
 func promptKdbxPath() (string, error) {
-	rl, err := readline.NewEx(&readline.Config{
-		Prompt:       "Path to your .kdbx database: ",
-		AutoComplete: &fileCompleter{filter: kdbxFilter},
-
-		// Disable history file for this one-off prompt
-		HistoryFile: "",
-
-		// Let Ctrl+C cancel gracefully
+	cfg := &readline.Config{
+		Prompt:          "Path to your .kdbx database: ",
+		AutoComplete:    &fileCompleter{filter: kdbxFilter},
+		HistoryFile:     "",
 		InterruptPrompt: "^C",
 		EOFPrompt:       "exit",
-	})
+		Painter:         kdbxPainter{},
+	}
+	cfg.SetListener(pathCaseListener())
+
+	rl, err := readline.NewEx(cfg)
 	if err != nil {
 		return "", fmt.Errorf("failed to initialize readline: %w", err)
 	}
@@ -226,7 +319,7 @@ func promptKdbxPath() (string, error) {
 			return "", errInitCancelled
 		}
 
-		raw := strings.TrimSpace(line)
+		raw := stripANSI(strings.TrimSpace(line))
 		if raw == "" {
 			fmt.Println("  Path cannot be empty.")
 			continue
@@ -430,3 +523,25 @@ func formatStringSlice(s []string) string {
 	}
 	return strings.Join(quoted, ", ")
 }
+
+// stripANSI removes ANSI escape sequences (e.g. \033[32m) from s.
+// Used to clean readline results that may contain color codes from
+// tab-completion candidates (.kdbx files are wrapped in green).
+func stripANSI(s string) string {
+	out := make([]byte, 0, len(s))
+	i := 0
+	for i < len(s) {
+		if s[i] == '\033' && i+1 < len(s) && s[i+1] == '[' {
+			i += 2
+			for i < len(s) && s[i] != 'm' {
+				i++
+			}
+			i++ // skip 'm'
+			continue
+		}
+		out = append(out, s[i])
+		i++
+	}
+	return string(out)
+}
+
