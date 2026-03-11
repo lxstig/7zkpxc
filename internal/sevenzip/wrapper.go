@@ -75,7 +75,10 @@ func RunWithTimeout(ctx context.Context, binaryPath string, password []byte, arg
 
 					_, _ = os.Stdout.Write(chunk)
 
-					// Small delay to ensure the prompt is flushed before writing
+					// Small delay to ensure the PTY output is flushed to the terminal
+					// before writing the password. This is a best-effort timing workaround:
+					// a channel-based flush signal would be more correct but the PTY
+					// protocol does not expose one. 10ms is sufficient in practice.
 					time.Sleep(10 * time.Millisecond)
 
 					_, _ = ptmx.Write(password)
@@ -106,9 +109,7 @@ func RunWithTimeout(ctx context.Context, binaryPath string, password []byte, arg
 			}
 
 			if err != nil {
-				if err != io.EOF {
-					_ = err // PTY read errors on process exit are expected
-				}
+				// PTY read errors on process exit are expected; break cleanly.
 				break
 			}
 		}

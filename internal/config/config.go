@@ -23,6 +23,8 @@ type Config struct {
 type GeneralConfig struct {
 	KdbxPath       string `mapstructure:"kdbx_path"`
 	DefaultGroup   string `mapstructure:"default_group"`
+	// UseKeyring is persisted in the config file but not yet acted on.
+	// TODO: implement OS keyring integration (e.g. via keyring package).
 	UseKeyring     bool   `mapstructure:"use_keyring"`
 	PasswordLength int    `mapstructure:"password_length"`
 }
@@ -85,7 +87,10 @@ func LoadConfig() (*Config, error) {
 	return &cfg, nil
 }
 
-// SaveConfig writes the configuration to the default config file
+// SaveConfig writes the configuration to the default config file using Viper.
+// Note: the interactive `init` command uses saveConfigWithComments instead,
+// which produces a commented YAML that survives manual edits more gracefully.
+// This function is available for programmatic writes that do not need comments.
 func SaveConfig(cfg *Config) error {
 	home, err := os.UserHomeDir()
 	if err != nil {

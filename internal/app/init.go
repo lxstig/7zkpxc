@@ -50,7 +50,7 @@ func (kdbxPainter) Paint(line []rune, _ int) []rune {
 	// Find the last path segment to check its extension
 	last := strings.LastIndex(s, "/")
 	seg := s[last+1:]
-	if !strings.HasSuffix(strings.ToLower(seg), ".kdbx") || seg == "" {
+	if seg == "" || !strings.HasSuffix(strings.ToLower(seg), ".kdbx") {
 		return line
 	}
 	// Color only the final segment (the .kdbx filename)
@@ -74,16 +74,7 @@ func (fc *fileCompleter) Do(line []rune, pos int) ([][]rune, int) {
 	}
 
 	// Expand ~ at the beginning
-	expanded := input
-	if strings.HasPrefix(expanded, "~/") || expanded == "~" {
-		if home, err := os.UserHomeDir(); err == nil {
-			if expanded == "~" {
-				expanded = home
-			} else {
-				expanded = filepath.Join(home, expanded[2:])
-			}
-		}
-	}
+	expanded := expandTilde(input)
 
 	// Determine directory to list and prefix already typed
 	dir := expanded
@@ -163,16 +154,7 @@ func pathCaseListener() func(line []rune, pos int, key rune) ([]rune, int, bool)
 		}
 
 		// Expand ~ if needed
-		expanded := input
-		if strings.HasPrefix(expanded, "~/") || expanded == "~" {
-			if home, err := os.UserHomeDir(); err == nil {
-				if expanded == "~" {
-					expanded = home
-				} else {
-					expanded = filepath.Join(home, expanded[2:])
-				}
-			}
-		}
+		expanded := expandTilde(input)
 
 		// Only correct when input is a partial path (not yet a directory)
 		if isDir(expanded) {
@@ -214,6 +196,23 @@ func isDir(path string) bool {
 	return info.IsDir()
 }
 
+// expandTilde replaces a leading "~" or "~/" with the user's home directory.
+// If home cannot be determined, the input is returned unchanged.
+// Note: this does NOT call filepath.Abs — callers that need absolute paths
+// should call expandAndResolve instead.
+func expandTilde(s string) string {
+	if s == "~" {
+		if home, err := os.UserHomeDir(); err == nil {
+			return home
+		}
+	} else if strings.HasPrefix(s, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, s[2:])
+		}
+	}
+	return s
+}
+
 // kdbxFilter shows only directories and .kdbx files during tab completion.
 func kdbxFilter(path string, isDir bool) bool {
 	if isDir {
@@ -238,11 +237,20 @@ func runInit() error {
 	fmt.Println("========================")
 	fmt.Println()
 
+	// isCancelled handles errInitCancelled uniformly across all prompt steps.
+	// Returns true (and prints "Setup cancelled.") when err is errInitCancelled.
+	isCancelled := func(err error) bool {
+		if errors.Is(err, errInitCancelled) {
+			fmt.Println("\nSetup cancelled.")
+			return true
+		}
+		return false
+	}
+
 	// --- Step 1: KDBX Path (with tab completion) ---
 	kdbxPath, err := promptKdbxPath()
 	if err != nil {
-		if errors.Is(err, errInitCancelled) {
-			fmt.Println("\nSetup cancelled.")
+		if isCancelled(err) {
 			return nil
 		}
 		return err
@@ -252,8 +260,7 @@ func runInit() error {
 	// --- Step 2: Default Group ---
 	group, err := promptGroup()
 	if err != nil {
-		if errors.Is(err, errInitCancelled) {
-			fmt.Println("\nSetup cancelled.")
+		if isCancelled(err) {
 			return nil
 		}
 		return err
@@ -263,8 +270,7 @@ func runInit() error {
 	// --- Step 3: Password Length ---
 	length, err := promptPasswordLength()
 	if err != nil {
-		if errors.Is(err, errInitCancelled) {
-			fmt.Println("\nSetup cancelled.")
+		if isCancelled(err) {
 			return nil
 		}
 		return err
@@ -274,8 +280,7 @@ func runInit() error {
 	// --- Step 4: 7z Binary ---
 	binary, err := promptSevenZipBinary()
 	if err != nil {
-		if errors.Is(err, errInitCancelled) {
-			fmt.Println("\nSetup cancelled.")
+		if isCancelled(err) {
 			return nil
 		}
 		return err
@@ -295,6 +300,7 @@ func runInit() error {
 	fmt.Printf("  7z bin  : %s\n", cfg.SevenZip.BinaryPath)
 	return nil
 }
+
 
 func promptKdbxPath() (string, error) {
 	cfg := &readline.Config{
@@ -344,13 +350,15 @@ func promptKdbxPath() (string, error) {
 			confirmRL, cErr := readline.NewEx(&readline.Config{
 				Prompt: "  Use anyway? [y/N]: ",
 			})
-			if cErr == nil {
-				answer, _ := confirmRL.Readline()
-				_ = confirmRL.Close()
-				answer = strings.TrimSpace(answer)
-				if answer != "y" && answer != "Y" {
-					continue
-				}
+			if cErr != nil {
+				// If we can't display the prompt, don't silently accept — re-prompt.
+				continue
+			}
+			answer, _ := confirmRL.Readline()
+			_ = confirmRL.Close()
+			answer = strings.TrimSpace(answer)
+			if answer != "y" && answer != "Y" {
+				continue
 			}
 		}
 

@@ -53,6 +53,34 @@ func (c *Client) getMasterPassword() []byte {
 	return c.masterPassword
 }
 
+// runCmd is the shared stdin-pipe helper for all keepassxc-cli invocations that
+// only need the master password on stdin (everything except AddEntry which also
+// sends the entry password). It starts the command, writes masterPassword + "\n",
+// closes stdin, waits for exit, and returns combined stdout+stderr bytes.
+func (c *Client) runCmd(cmd *exec.Cmd) ([]byte, error) {
+	var outBuf bytes.Buffer
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &outBuf
+
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, err
+	}
+
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+
+	_, _ = stdin.Write(c.getMasterPassword())
+	_, _ = stdin.Write([]byte("\n"))
+	_ = stdin.Close()
+
+	if err := cmd.Wait(); err != nil {
+		return outBuf.Bytes(), err
+	}
+	return outBuf.Bytes(), nil
+}
+
 // GeneratePassword creates a secure random password using keepassxc-cli generate.
 // This delegates all cryptographic work to KeePassXC's audited generator.
 // Flags: -L length, -l lowercase, -U uppercase, -n numbers, -s special characters.
@@ -94,8 +122,8 @@ func (c *Client) EnsureUnlocked() error {
 		return nil
 	}
 
+	dir := filepath.Dir(c.DatabasePath) + "/"
 	base := filepath.Base(c.DatabasePath)
-	dir := c.DatabasePath[:len(c.DatabasePath)-len(base)]
 	fmt.Printf("Enter password for %s\033[32m%s\033[0m: ", dir, base)
 	bytePassword, err := term.ReadPassword(int(syscall.Stdin))
 	if err != nil {
@@ -154,33 +182,17 @@ func (c *Client) Mkdir(groupPath string) error {
 		}
 		currentPath += part
 
-		cmd := buildCmd("mkdir", c.DatabasePath, currentPath)
-		var outBuf bytes.Buffer
-		cmd.Stdout = &outBuf
-		cmd.Stderr = &outBuf
-
-		stdin, err := cmd.StdinPipe()
+		out, err := c.runCmd(buildCmd("mkdir", c.DatabasePath, currentPath))
 		if err != nil {
-			return err
-		}
-
-		if err := cmd.Start(); err != nil {
-			return err
-		}
-
-		_, _ = stdin.Write(c.getMasterPassword())
-		_, _ = stdin.Write([]byte("\n"))
-		_ = stdin.Close()
-
-		err = cmd.Wait()
-		if err != nil {
-			return fmt.Errorf("keepassxc-cli mkdir failed for '%s': %s: %s", currentPath, err, outBuf.String())
+			return fmt.Errorf("keepassxc-cli mkdir failed for '%s': %s: %s", currentPath, err, out)
 		}
 	}
 	return nil
 }
 
-// GroupExists checks if a group exists
+// GroupExists checks if a group exists.
+// Returns false both when the group is absent and when the check itself fails;
+// callers that care about the distinction should use a different approach.
 func (c *Client) GroupExists(path string) bool {
 	if err := c.EnsureUnlocked(); err != nil {
 		return false
@@ -188,21 +200,9 @@ func (c *Client) GroupExists(path string) bool {
 
 	path = filepath.ToSlash(filepath.Clean(path))
 
-	// 'ls' will succeed (exit code 0) if the group exists, and fail if not.
-	cmdLs := buildCmd("ls", "-q", c.DatabasePath, path)
-	stdinLs, err := cmdLs.StdinPipe()
-	if err == nil {
-		if err := cmdLs.Start(); err == nil {
-			_, _ = stdinLs.Write(c.getMasterPassword())
-			_, _ = stdinLs.Write([]byte("\n"))
-			_ = stdinLs.Close()
-			if err := cmdLs.Wait(); err == nil {
-				return true // It's a group
-			}
-		}
-	}
-
-	return false
+	// 'ls' exits 0 if the group exists, non-zero otherwise.
+	_, err := c.runCmd(buildCmd("ls", "-q", c.DatabasePath, path))
+	return err == nil
 }
 
 // Search queries KeePassXC for entries matching a string and returns their paths
@@ -212,10 +212,10 @@ func (c *Client) Search(query string) ([]string, error) {
 	}
 
 	cmd := buildCmd("search", c.DatabasePath, query)
+	cmd.Stderr = io.Discard // suppress "Enter password to unlock" prompt spam
 
 	var outBuf bytes.Buffer
 	cmd.Stdout = &outBuf
-	cmd.Stderr = io.Discard // suppress "Enter password to unlock" prompt spam
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -250,7 +250,9 @@ func (c *Client) Search(query string) ([]string, error) {
 	return results, nil
 }
 
-// AddEntry adds a new entry to KeePassXC
+// AddEntry adds a new entry to KeePassXC.
+// It writes three lines to stdin: master password, entry password, entry password (confirm).
+// This does not use runCmd because it requires a custom stdin sequence.
 func (c *Client) AddEntry(group, title string, password []byte, username string, url string) error {
 	if err := c.EnsureUnlocked(); err != nil {
 		return err
@@ -309,29 +311,10 @@ func (c *Client) DeleteEntry(entryPath string) error {
 		return err
 	}
 
-	cmd := buildCmd("rm", c.DatabasePath, entryPath)
-
-	var outBuf bytes.Buffer
-	cmd.Stdout = &outBuf
-	cmd.Stderr = &outBuf
-
-	stdin, err := cmd.StdinPipe()
+	out, err := c.runCmd(buildCmd("rm", c.DatabasePath, entryPath))
 	if err != nil {
-		return err
+		return fmt.Errorf("keepassxc-cli rm failed: %s: %s", err, out)
 	}
-
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-
-	_, _ = stdin.Write(c.getMasterPassword())
-	_, _ = stdin.Write([]byte("\n"))
-	_ = stdin.Close()
-
-	if err := cmd.Wait(); err != nil {
-		return fmt.Errorf("keepassxc-cli rm failed: %s: %s", err, outBuf.String())
-	}
-
 	return nil
 }
 
@@ -341,29 +324,10 @@ func (c *Client) UpdateEntryUsername(entryPath, username string) error {
 		return err
 	}
 
-	cmd := buildCmd("edit", "--username", username, c.DatabasePath, entryPath)
-
-	var outBuf bytes.Buffer
-	cmd.Stdout = &outBuf
-	cmd.Stderr = &outBuf
-
-	stdin, err := cmd.StdinPipe()
+	out, err := c.runCmd(buildCmd("edit", "--username", username, c.DatabasePath, entryPath))
 	if err != nil {
-		return err
+		return fmt.Errorf("keepassxc-cli edit failed: %s: %s", err, out)
 	}
-
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-
-	_, _ = stdin.Write(c.getMasterPassword())
-	_, _ = stdin.Write([]byte("\n"))
-	_ = stdin.Close()
-
-	if err := cmd.Wait(); err != nil {
-		return fmt.Errorf("keepassxc-cli edit failed: %s: %s", err, outBuf.String())
-	}
-
 	return nil
 }
 
@@ -374,10 +338,10 @@ func (c *Client) GetPassword(entryPath string) ([]byte, error) {
 	}
 
 	cmd := buildCmd("show", "-s", "-a", "password", "-q", c.DatabasePath, entryPath)
+	cmd.Stderr = io.Discard // suppress "Enter password to unlock" prompt spam
 
 	var outBuf bytes.Buffer
 	cmd.Stdout = &outBuf
-	cmd.Stderr = io.Discard // suppress "Enter password to unlock" prompt spam
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -419,10 +383,10 @@ func (c *Client) GetAttribute(entryPath, attribute string) (string, error) {
 	}
 
 	cmd := buildCmd("show", "-a", attribute, "-q", c.DatabasePath, entryPath)
+	cmd.Stderr = io.Discard // suppress "Enter password to unlock" prompt spam
 
 	var outBuf bytes.Buffer
 	cmd.Stdout = &outBuf
-	cmd.Stderr = io.Discard // suppress "Enter password to unlock" prompt spam
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

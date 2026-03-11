@@ -2,6 +2,7 @@ package app
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -673,6 +674,18 @@ func TestPasswordNotFoundError(t *testing.T) {
 	}
 }
 
+// TestIsPasswordNotFound_WrappedError is the regression test for the bug where
+// IsPasswordNotFound used a direct type assertion and failed on wrapped errors.
+// resolvePassword in add.go wraps errors before callers check them.
+func TestIsPasswordNotFound_WrappedError(t *testing.T) {
+	inner := &PasswordNotFoundError{ArchiveName: "archive.7z", Tried: []string{"backups/archive.7z"}}
+	wrapped := fmt.Errorf("failed to fetch password: %w", inner)
+
+	if !IsPasswordNotFound(wrapped) {
+		t.Error("IsPasswordNotFound should return true for a wrapped PasswordNotFoundError")
+	}
+}
+
 func TestMultiMatchError(t *testing.T) {
 	err := &MultiMatchError{
 		Basename: "backup.7z",
@@ -690,6 +703,17 @@ func TestMultiMatchError(t *testing.T) {
 	}
 	if err.Error() == "" {
 		t.Error("Error message is empty")
+	}
+}
+
+// TestIsMultiMatch_WrappedError is the regression test for the bug where
+// IsMultiMatch used a direct type assertion and failed on wrapped errors.
+func TestIsMultiMatch_WrappedError(t *testing.T) {
+	inner := &MultiMatchError{Basename: "backup.7z", Candidates: []EntryCandidate{{}}}
+	wrapped := fmt.Errorf("multiple entries: %w", inner)
+
+	if !IsMultiMatch(wrapped) {
+		t.Error("IsMultiMatch should return true for a wrapped MultiMatchError")
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -79,12 +80,10 @@ func normalizeArchiveName(path string) string {
 	}
 
 	if splitRarPartRe.MatchString(base) {
-		loc := splitRarPartRe.FindStringIndex(base)
-		if loc != nil {
-			matched := base[loc[0]:loc[1]]
-			rarExt := matched[len(matched)-4:] // ".rar", ".RAR", etc.
-			return base[:loc[0]] + rarExt
-		}
+		loc := splitRarPartRe.FindStringIndex(base) // guaranteed non-nil after MatchString
+		matched := base[loc[0]:loc[1]]
+		rarExt := matched[len(matched)-4:] // ".rar", ".RAR", etc.
+		return base[:loc[0]] + rarExt
 	}
 
 	if splitRarOldRe.MatchString(base) {
@@ -214,10 +213,10 @@ func (e *MultiMatchError) Error() string {
 	return fmt.Sprintf("multiple KeePass entries found for '%s' (%d matches)", e.Basename, len(e.Candidates))
 }
 
-// IsMultiMatch reports whether err is a MultiMatchError.
+// IsMultiMatch reports whether err (or any error in its chain) is a MultiMatchError.
 func IsMultiMatch(err error) bool {
-	_, ok := err.(*MultiMatchError)
-	return ok
+	var target *MultiMatchError
+	return errors.As(err, &target)
 }
 
 // -------------------------------------------------------------------
@@ -543,8 +542,8 @@ func (e *PasswordNotFoundError) Error() string {
 		e.ArchiveName, strings.Join(e.Tried, ", "))
 }
 
-// IsPasswordNotFound checks if an error is a PasswordNotFoundError
+// IsPasswordNotFound reports whether err (or any error in its chain) is a PasswordNotFoundError.
 func IsPasswordNotFound(err error) bool {
-	_, ok := err.(*PasswordNotFoundError)
-	return ok
+	var target *PasswordNotFoundError
+	return errors.As(err, &target)
 }
