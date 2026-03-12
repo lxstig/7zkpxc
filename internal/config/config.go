@@ -16,27 +16,44 @@ const (
 
 // Config holds the application configuration
 type Config struct {
-	General  GeneralConfig  `mapstructure:"general"`
-	SevenZip SevenZipConfig `mapstructure:"sevenzip"`
+	General  GeneralConfig  `mapstructure:"general" yaml:"general"`
+	SevenZip SevenZipConfig `mapstructure:"sevenzip" yaml:"sevenzip"`
 }
 
 type GeneralConfig struct {
-	KdbxPath       string `mapstructure:"kdbx_path"`
-	DefaultGroup   string `mapstructure:"default_group"`
+	KdbxPath       string `mapstructure:"kdbx_path" yaml:"kdbx_path"`
+	DefaultGroup   string `mapstructure:"default_group" yaml:"default_group"`
 	// UseKeyring is persisted in the config file but not yet acted on.
 	// TODO: implement OS keyring integration (e.g. via keyring package).
-	UseKeyring     bool   `mapstructure:"use_keyring"`
-	PasswordLength int    `mapstructure:"password_length"`
+	UseKeyring     bool   `mapstructure:"use_keyring" yaml:"use_keyring"`
+	PasswordLength int    `mapstructure:"password_length" yaml:"password_length"`
 }
 
 type SevenZipConfig struct {
-	DefaultArgs []string `mapstructure:"default_args"`
-	BinaryPath  string   `mapstructure:"binary_path"`
+	DefaultArgs []string `mapstructure:"default_args" yaml:"default_args"`
+	BinaryPath  string   `mapstructure:"binary_path" yaml:"binary_path"`
+}
+
+var (
+	// cachedConfig stores the loaded config to prevent redundant disk reads.
+	// In a short-lived CLI this saves ~1ms per call, but avoids parsing twice
+	// (once in checkDependencies and once in the command body).
+	cachedConfig *Config
+)
+
+// ClearCache forces the next LoadConfig call to read from disk/env again.
+// Useful for tests.
+func ClearCache() {
+	cachedConfig = nil
 }
 
 // LoadConfig reads configuration from file and environment variables.
-// Uses a fresh Viper instance each time to avoid global state races.
+// It returns a cached copy if already loaded during this execution.
 func LoadConfig() (*Config, error) {
+	if cachedConfig != nil {
+		return cachedConfig, nil
+	}
+
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get user home directory: %w", err)
@@ -55,8 +72,8 @@ func LoadConfig() (*Config, error) {
 	v.SetDefault("sevenzip.default_args", []string{"-mhe=on", "-mx=9"})
 	v.SetDefault("sevenzip.binary_path", "7z")
 
-	// Environment variables (prefix: SZKPXC_)
-	v.SetEnvPrefix("SZKPXC")
+	// Environment variables (prefix: 7ZKPXC_)
+	v.SetEnvPrefix("7ZKPXC")
 	v.AutomaticEnv()
 
 	if err := v.ReadInConfig(); err != nil {
@@ -84,6 +101,7 @@ func LoadConfig() (*Config, error) {
 			cfg.General.PasswordLength, PasswordLengthMin, PasswordLengthMax)
 	}
 
+	cachedConfig = &cfg
 	return &cfg, nil
 }
 

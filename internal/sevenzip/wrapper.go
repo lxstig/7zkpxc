@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"time"
@@ -47,79 +46,8 @@ func RunWithTimeout(ctx context.Context, binaryPath string, password []byte, arg
 	// prompt is handled.
 	passwordSent := make(chan struct{})
 
-	// stdin bridge: forwards user keystrokes to the PTY after the password has
-	// been sent. This allows 7z's interactive prompts (e.g.
-	// "(Y)es / (N)o / (A)lways / (S)kip all / (Q)uit?") to be answered.
-	go func() {
-		<-passwordSent
-		_, _ = io.Copy(ptmx, os.Stdin)
-	}()
-
-	// Output processor goroutine: intercepts password prompts, suppresses echo
-	go func() {
-		defer close(done)
-
-		buf := make([]byte, 32*1024) // 32 KB — large enough to avoid per-byte reads
-		suppressUntilNewline := false
-		sentPassword := false
-
-		for {
-			n, err := ptmx.Read(buf)
-			if n > 0 {
-				chunk := buf[:n]
-				lowerChunk := bytes.ToLower(chunk)
-
-				// Detect password prompt (handles "Enter password" and "Reenter password")
-				if !suppressUntilNewline && (bytes.Contains(lowerChunk, []byte("enter password")) ||
-					bytes.Contains(lowerChunk, []byte("password:"))) {
-
-					_, _ = os.Stdout.Write(chunk)
-
-					// Small delay to ensure the PTY output is flushed to the terminal
-					// before writing the password. This is a best-effort timing workaround:
-					// a channel-based flush signal would be more correct but the PTY
-					// protocol does not expose one. 10ms is sufficient in practice.
-					time.Sleep(10 * time.Millisecond)
-
-					_, _ = ptmx.Write(password)
-					_, _ = ptmx.Write([]byte("\n"))
-					suppressUntilNewline = true
-
-					// Unblock the stdin bridge on first password send only
-					if !sentPassword {
-						sentPassword = true
-						close(passwordSent)
-					}
-					continue
-				}
-
-				if suppressUntilNewline {
-					// Suppress echo until we see the newline that terminates it
-					nlIdx := bytes.IndexAny(chunk, "\n\r")
-					if nlIdx != -1 {
-						suppressUntilNewline = false
-						if nlIdx+1 < len(chunk) {
-							_, _ = os.Stdout.Write(chunk[nlIdx+1:])
-						}
-					}
-					continue
-				}
-
-				_, _ = os.Stdout.Write(chunk)
-			}
-
-			if err != nil {
-				// PTY read errors on process exit are expected; break cleanly.
-				break
-			}
-		}
-
-		// If the process exited before a password prompt was ever seen
-		// (e.g. unencrypted archive), unblock the stdin bridge so it exits cleanly.
-		if !sentPassword {
-			close(passwordSent)
-		}
-	}()
+	go bridgeStdin(ctx, ptmx, passwordSent)
+	go processOutput(ptmx, password, passwordSent, done)
 
 	errWait := cmd.Wait()
 	<-done
@@ -132,3 +60,106 @@ func RunWithTimeout(ctx context.Context, binaryPath string, password []byte, arg
 	return errWait
 }
 
+// bridgeStdin forwards user keystrokes to the PTY after the password has
+// been sent. This allows 7z's interactive prompts (e.g.
+// "(Y)es / (N)o / (A)lways / (S)kip all / (Q)uit?") to be answered.
+func bridgeStdin(ctx context.Context, ptmx *os.File, passwordSent <-chan struct{}) {
+	select {
+	case <-passwordSent:
+	case <-ctx.Done():
+		return
+	}
+
+	// A crude but effective way to prevent the goroutine from leaking indefinitely
+	// when os.Stdin blocks. We read 1 byte at a time in a separate sub-routine
+	// and check context cancellation.
+	ch := make(chan []byte)
+	go func() {
+		buf := make([]byte, 1024)
+		for {
+			n, err := os.Stdin.Read(buf)
+			if n > 0 {
+				b := make([]byte, n)
+				copy(b, buf[:n])
+				ch <- b
+			}
+			if err != nil {
+				close(ch)
+				return
+			}
+		}
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case b, ok := <-ch:
+			if !ok {
+				return
+			}
+			_, _ = ptmx.Write(b)
+		}
+	}
+}
+
+// processOutput intercepts password prompts and suppresses token echo.
+func processOutput(ptmx *os.File, password []byte, passwordSent chan<- struct{}, done chan<- error) {
+	defer close(done)
+
+	buf := make([]byte, 32*1024) // 32 KB — large enough to avoid per-byte reads
+	suppressUntilNewline := false
+	sentPassword := false
+
+	defer func() {
+		// If the process exited before a password prompt was ever seen
+		// (e.g. unencrypted archive), unblock the stdin bridge so it exits cleanly.
+		if !sentPassword {
+			close(passwordSent)
+		}
+	}()
+
+	for {
+		n, err := ptmx.Read(buf)
+		if n > 0 {
+			chunk := buf[:n]
+			lowerChunk := bytes.ToLower(chunk)
+
+			// Detect password prompt (handles "Enter password" and "Reenter password")
+			if !suppressUntilNewline && (bytes.Contains(lowerChunk, []byte("enter password")) ||
+				bytes.Contains(lowerChunk, []byte("password:"))) {
+
+				_, _ = os.Stdout.Write(chunk)
+				_, _ = ptmx.Write(password)
+				_, _ = ptmx.Write([]byte("\n"))
+				suppressUntilNewline = true
+
+				// Unblock the stdin bridge on first password send only
+				if !sentPassword {
+					sentPassword = true
+					close(passwordSent)
+				}
+				continue
+			}
+
+			if suppressUntilNewline {
+				// Suppress echo until we see the newline that terminates it
+				nlIdx := bytes.IndexAny(chunk, "\n\r")
+				if nlIdx != -1 {
+					suppressUntilNewline = false
+					if nlIdx+1 < len(chunk) {
+						_, _ = os.Stdout.Write(chunk[nlIdx+1:])
+					}
+				}
+				continue
+			}
+
+			_, _ = os.Stdout.Write(chunk)
+		}
+
+		if err != nil {
+			// PTY read errors on process exit are expected; break cleanly.
+			break
+		}
+	}
+}

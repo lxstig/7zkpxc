@@ -1,7 +1,10 @@
 package app
 
 import (
+	"bufio"
 	"fmt"
+	"os"
+	"strings"
 
 	"github.com/lxstig/7zkpxc/internal/config"
 	"github.com/lxstig/7zkpxc/internal/keepass"
@@ -26,48 +29,29 @@ func runDelete(cmd *cobra.Command, args []string) error {
 	cmd.SilenceUsage = true
 	archivePath := args[0]
 
-	cfg, err := config.LoadConfig()
-	if err != nil {
-		return err
-	}
+	return withKeePassArchive(archivePath, true, func(cfg *config.Config, kp *keepass.Client, password []byte, entryPath string) error {
+		force, _ := cmd.Flags().GetBool("force")
+		if !force {
+			fmt.Printf("This will delete the KeePassXC entry: %s\n", entryPath)
+			fmt.Print("Are you sure? [y/N]: ")
 
-	kp := keepass.New(cfg.General.KdbxPath)
-	defer kp.Close()
+			scanner := bufio.NewScanner(os.Stdin)
+			if !scanner.Scan() {
+				return fmt.Errorf("failed to read confirmation")
+			}
+			confirm := strings.TrimSpace(scanner.Text())
 
-	// Reuse GetPasswordForArchive for consistent lookup logic — same fallback
-	// chain as x/l: exact path → split normalization → global search.
-	// We discard the password bytes immediately.
-	fmt.Printf("Looking up entry for '%s'...\n", archivePath)
-	password, entryPath, _, err := resolvePassword(kp, cfg.General.DefaultGroup, archivePath)
-	if err != nil {
-		if IsPasswordNotFound(err) {
-			return fmt.Errorf("no KeePassXC entry found for '%s' in group '%s'", archivePath, cfg.General.DefaultGroup)
+			if confirm != "y" && confirm != "Y" {
+				fmt.Println("Aborted.")
+				return nil
+			}
 		}
-		return fmt.Errorf("failed to look up entry: %w", err)
-	}
-	// Zero out the password — we only needed it to verify the entry exists
-	for i := range password {
-		password[i] = 0
-	}
 
-	force, _ := cmd.Flags().GetBool("force")
-	if !force {
-		fmt.Printf("This will delete the KeePassXC entry: %s\n", entryPath)
-		fmt.Print("Are you sure? [y/N]: ")
-		var confirm string
-		if _, err := fmt.Scanln(&confirm); err != nil {
-			return fmt.Errorf("failed to read confirmation: %w", err)
+		if err := kp.DeleteEntry(entryPath); err != nil {
+			return fmt.Errorf("failed to delete entry: %w", err)
 		}
-		if confirm != "y" && confirm != "Y" {
-			fmt.Println("Aborted.")
-			return nil
-		}
-	}
 
-	if err := kp.DeleteEntry(entryPath); err != nil {
-		return fmt.Errorf("failed to delete entry: %w", err)
-	}
-
-	fmt.Printf("Entry '%s' deleted from KeePassXC.\n", entryPath)
-	return nil
+		fmt.Printf("Entry '%s' deleted from KeePassXC.\n", entryPath)
+		return nil
+	})
 }

@@ -10,6 +10,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/lxstig/7zkpxc/internal/config"
+	"github.com/lxstig/7zkpxc/internal/keepass"
 )
 
 // Regex patterns for detecting split volumes
@@ -131,14 +134,18 @@ func generateUUID8() (string, error) {
 // A collision is astronomically unlikely (~1 in 4 billion per call), but this
 // loop provides mathematical certainty at virtually zero cost.
 func generateUniqueUUID8(kp PasswordProvider, group, basename string) (string, error) {
-	for {
+	maxRetries := 20
+	for i := 0; i < maxRetries; i++ {
 		uuid8, err := generateUUID8()
 		if err != nil {
 			return "", err
 		}
 		title := makeEntryTitle(basename, uuid8)
 		candidatePath := filepath.ToSlash(filepath.Clean(group + "/" + title))
-		results, _ := kp.Search(title)
+		results, err := kp.Search(title)
+		if err != nil {
+			return "", fmt.Errorf("collision check failed: %w", err)
+		}
 		collision := false
 		for _, r := range results {
 			if filepath.ToSlash(r) == candidatePath {
@@ -150,6 +157,7 @@ func generateUniqueUUID8(kp PasswordProvider, group, basename string) (string, e
 			return uuid8, nil
 		}
 	}
+	return "", fmt.Errorf("failed to generate unique UUID after %d retries", maxRetries)
 }
 
 // makeEntryTitle constructs a KeePass entry title from a basename and uuid8.
@@ -237,7 +245,10 @@ func collectCandidates(kp PasswordProvider, prefix, basename string) ([]EntryCan
 	seen := make(map[string]bool)
 	var allResults []string
 	for _, pattern := range []string{basename + " (", basename} {
-		results, _ := kp.Search(pattern)
+		results, err := kp.Search(pattern)
+		if err != nil {
+			return nil, fmt.Errorf("search failed for pattern %q: %w", pattern, err)
+		}
 		for _, res := range results {
 			res = filepath.ToSlash(res)
 			if !seen[res] {
@@ -305,23 +316,34 @@ func (l *passwordLookup) buildPath(title string) string {
 	return l.prefix + "/" + title
 }
 
-func (l *passwordLookup) tryPath(entryPath string) ([]byte, string, bool) {
+func (l *passwordLookup) tryPath(entryPath string) ([]byte, string, bool, error) {
 	l.tried = append(l.tried, entryPath)
 	pass, err := l.kp.GetPassword(entryPath)
 	if err == nil {
-		return pass, entryPath, true
+		return pass, entryPath, true, nil
 	}
-	return nil, "", false
+	// If it's a real KeePassXC error (e.g. wrong master password), abort and return it.
+	// We recognize true errors because cli.go appends the stderr output (containing ": ").
+	if strings.Contains(err.Error(), ": ") {
+		return nil, "", false, err
+	}
+	// Otherwise it's just "not found", continue the lookup chain.
+	return nil, "", false, nil
 }
 
 func (l *passwordLookup) searchAndTry(basename string) ([]byte, string, error) {
-	candidates, _ := collectCandidates(l.kp, l.prefix, basename)
+	candidates, err := collectCandidates(l.kp, l.prefix, basename)
+	if err != nil {
+		return nil, "", err
+	}
 	switch len(candidates) {
 	case 0:
 		return nil, "", nil
 	case 1:
-		if pass, found, ok := l.tryPath(candidates[0].EntryPath); ok {
-			return pass, found, nil
+		if pass, entryPath, ok, errPath := l.tryPath(candidates[0].EntryPath); ok {
+			return pass, entryPath, nil
+		} else if errPath != nil {
+			return nil, "", errPath
 		}
 		return nil, "", nil
 	default:
@@ -352,18 +374,22 @@ func GetPasswordForArchive(kp PasswordProvider, entryPathPrefix, archivePath str
 	l := &passwordLookup{kp: kp, prefix: entryPathPrefix}
 
 	// 1. Search by basename (UUID format primary, old format fallback)
-	if pass, found, err := l.searchAndTry(filepath.Base(archivePath)); err != nil || pass != nil {
-		return pass, found, err
+	if pass, entryPath, err := l.searchAndTry(filepath.Base(archivePath)); err != nil || pass != nil {
+		return pass, entryPath, err
 	}
 
 	// 2. Backward compat: encoded exact path
-	if pass, found, ok := l.tryPath(l.buildPath(encodeArchivePath(absPath))); ok {
-		return pass, found, nil
+	if pass, entryPath, ok, err := l.tryPath(l.buildPath(encodeArchivePath(absPath))); ok {
+		return pass, entryPath, nil
+	} else if err != nil {
+		return nil, "", err
 	}
 
 	// 3. Backward compat: old flat basename
-	if pass, found, ok := l.tryPath(l.buildPath(filepath.Base(archivePath))); ok {
-		return pass, found, nil
+	if pass, entryPath, ok, err := l.tryPath(l.buildPath(filepath.Base(archivePath))); ok {
+		return pass, entryPath, nil
+	} else if err != nil {
+		return nil, "", err
 	}
 
 	// 4. Split archive fallbacks
@@ -375,15 +401,19 @@ func GetPasswordForArchive(kp PasswordProvider, entryPathPrefix, archivePath str
 }
 
 func (l *passwordLookup) splitFallbacks(info ArchiveInfo, absPath string) ([]byte, string, error) {
-	if pass, found, err := l.searchAndTry(info.NormalizedName); err != nil || pass != nil {
-		return pass, found, err
+	if pass, entryPath, err := l.searchAndTry(info.NormalizedName); err != nil || pass != nil {
+		return pass, entryPath, err
 	}
 	absNorm := filepath.Join(filepath.Dir(absPath), info.NormalizedName)
-	if pass, found, ok := l.tryPath(l.buildPath(encodeArchivePath(absNorm))); ok {
-		return pass, found, nil
+	if pass, entryPath, ok, err := l.tryPath(l.buildPath(encodeArchivePath(absNorm))); ok {
+		return pass, entryPath, nil
+	} else if err != nil {
+		return nil, "", err
 	}
-	if pass, found, ok := l.tryPath(l.buildPath(info.NormalizedName)); ok {
-		return pass, found, nil
+	if pass, entryPath, ok, err := l.tryPath(l.buildPath(info.NormalizedName)); ok {
+		return pass, entryPath, nil
+	} else if err != nil {
+		return nil, "", err
 	}
 	return nil, "", &PasswordNotFoundError{ArchiveName: info.OriginalName, Tried: l.tried}
 }
@@ -437,8 +467,8 @@ func resolvePassword(kp PasswordProvider, prefix, archivePath string) (password 
 		return password, resolvedPath, !isUUID, nil
 	}
 
-	mm, ok := err.(*MultiMatchError)
-	if !ok {
+	var mm *MultiMatchError
+	if !errors.As(err, &mm) {
 		return nil, "", false, err
 	}
 
@@ -470,7 +500,7 @@ type EntryMigrator interface {
 // migrateEntry upgrades an old-format KeePass entry to the new UUID title format.
 // It silently adds a new entry and deletes the old one.
 // Failures are non-fatal; the caller should log a warning at most.
-func migrateEntry(kp EntryMigrator, prefix, oldEntryPath string, password []byte, lastKnownPath string) (newEntryPath string, err error) {
+func migrateEntry(kp *keepass.Client, prefix, oldEntryPath string, password []byte, lastKnownPath string) (newEntryPath string, err error) {
 	basename := filepath.Base(lastKnownPath)
 	if basename == "" || basename == "." {
 		basename = filepath.Base(oldEntryPath)
@@ -525,6 +555,73 @@ func updatePathIfMoved(kp PasswordProvider, entryPath, absArchivePath string) {
 		return
 	}
 	fmt.Println("(Location updated in KeePassXC.)")
+}
+
+// -------------------------------------------------------------------
+// Command Wrapper
+// -------------------------------------------------------------------
+
+// ArchiveOp is the function signature for operations that run inside withKeePassArchive.
+type ArchiveOp func(cfg *config.Config, kp *keepass.Client, password []byte, entryPath string) error
+
+// withKeePassArchive is a cross-cutting abstraction that removes the 50 lines
+// of boilerplate repeated in every archive action command (add/extract/list/delete).
+// It loads the config, opens the KeePass DB, resolves the password (with interactive fallback),
+// executes the provided operation, securely zeroes the password, and handles
+// housekeeping (migrating old entries, updating moved paths).
+// If readOnly is true, it does not attempt to migrate or update paths (used by delete).
+func withKeePassArchive(archivePath string, readOnly bool, op ArchiveOp) error {
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		return err
+	}
+
+	absPath, err := filepath.Abs(archivePath)
+	if err != nil {
+		absPath = archivePath
+	}
+
+	kp := keepass.New(cfg.General.KdbxPath)
+	defer kp.Close()
+
+	fmt.Printf("Fetching password for '%s'...\n", archivePath)
+	password, entryPath, needsMigration, err := resolvePassword(kp, cfg.General.DefaultGroup, archivePath)
+	if err != nil {
+		if IsPasswordNotFound(err) {
+			return fmt.Errorf("archive '%s' not found in KeePassXC group '%s'", archivePath, cfg.General.DefaultGroup)
+		}
+		return fmt.Errorf("failed to get password: %w", err)
+	}
+
+	// Defer password zeroing
+	defer func() {
+		for i := range password {
+			password[i] = 0
+		}
+	}()
+
+	// Execute the actual core command logic
+	opErr := op(cfg, kp, password, entryPath)
+
+	// Housekeeping (only on success and if not read-only)
+	if opErr == nil && !readOnly {
+		if needsMigration {
+			lastKnownPath := entryPath
+			if lk, e := kp.GetAttribute(entryPath, "Username"); e == nil && lk != "" {
+				lastKnownPath = lk
+			}
+			newPath, migrateErr := migrateEntry(kp, cfg.General.DefaultGroup, entryPath, password, lastKnownPath)
+			if migrateErr != nil {
+				fmt.Printf("Note: could not migrate entry to new format: %v\n", migrateErr)
+			} else {
+				fmt.Println("(Entry migrated to new format.)")
+				entryPath = newPath
+			}
+		}
+		updatePathIfMoved(kp, entryPath, absPath)
+	}
+
+	return opErr
 }
 
 // -------------------------------------------------------------------

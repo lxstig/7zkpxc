@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"github.com/chzyer/readline"
 	"github.com/lxstig/7zkpxc/internal/config"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
 var errInitCancelled = errors.New("setup cancelled")
@@ -117,16 +119,12 @@ func (fc *fileCompleter) listDir(dir, prefix string) [][]rune {
 		}
 
 		// Return only the suffix (chzyer/readline appends, never deletes).
-		// For .kdbx files, wrap the suffix in ANSI green so the completion
-		// menu shows them colored. The ANSI codes are stripped from the
-		// readline result before the path is used (see stripANSI below).
+		// kdbxPainter handles the coloring of the raw target path dynamically
+		// as it is typed or completed.
 		suffix := name[len(prefix):]
 		if entryIsDir {
 			suffix += "/"
 		} else {
-			if strings.HasSuffix(strings.ToLower(name), ".kdbx") {
-				suffix = ansiGreen + suffix + ansiReset
-			}
 			suffix += " "
 		}
 
@@ -301,7 +299,6 @@ func runInit() error {
 	return nil
 }
 
-
 func promptKdbxPath() (string, error) {
 	cfg := &readline.Config{
 		Prompt:          "Path to your .kdbx database: ",
@@ -325,7 +322,7 @@ func promptKdbxPath() (string, error) {
 			return "", errInitCancelled
 		}
 
-		raw := stripANSI(strings.TrimSpace(line))
+		raw := strings.TrimSpace(line)
 		if raw == "" {
 			fmt.Println("  Path cannot be empty.")
 			continue
@@ -347,16 +344,12 @@ func promptKdbxPath() (string, error) {
 		if !strings.HasSuffix(strings.ToLower(resolved), ".kdbx") {
 			fmt.Printf("  Warning: '%s' doesn't have a .kdbx extension.\n", filepath.Base(resolved))
 
-			confirmRL, cErr := readline.NewEx(&readline.Config{
-				Prompt: "  Use anyway? [y/N]: ",
-			})
-			if cErr != nil {
-				// If we can't display the prompt, don't silently accept — re-prompt.
-				continue
+			fmt.Print("  Use anyway? [y/N]: ")
+			scanner := bufio.NewScanner(os.Stdin)
+			if !scanner.Scan() {
+				return "", errInitCancelled // Handle EOF/Ctrl+C
 			}
-			answer, _ := confirmRL.Readline()
-			_ = confirmRL.Close()
-			answer = strings.TrimSpace(answer)
+			answer := strings.TrimSpace(scanner.Text())
 			if answer != "y" && answer != "Y" {
 				continue
 			}
@@ -472,16 +465,7 @@ func promptSevenZipBinary() (string, error) {
 }
 
 func expandAndResolve(path string) string {
-	if strings.HasPrefix(path, "~/") || path == "~" {
-		home, err := os.UserHomeDir()
-		if err == nil {
-			if path == "~" {
-				path = home
-			} else {
-				path = filepath.Join(home, path[2:])
-			}
-		}
-	}
+	path = expandTilde(path)
 
 	abs, err := filepath.Abs(path)
 	if err != nil {
@@ -500,56 +484,50 @@ func saveConfigWithComments(cfg *config.Config) error {
 		return err
 	}
 
-	content := fmt.Sprintf(`general:
-  kdbx_path: "%s"
-  default_group: "%s"
-  use_keyring: %t
-  # generated password length (min: %d, max: %d)
-  password_length: %d
-sevenzip:
-  binary_path: "%s"
-  default_args: [%s]
-`,
-		cfg.General.KdbxPath,
-		cfg.General.DefaultGroup,
-		cfg.General.UseKeyring,
-		config.PasswordLengthMin,
-		config.PasswordLengthMax,
-		cfg.General.PasswordLength,
-		cfg.SevenZip.BinaryPath,
-		formatStringSlice(cfg.SevenZip.DefaultArgs),
-	)
+	// We use yaml.Node to inject comments programmatically
+	var root yaml.Node
 
-	configPath := filepath.Join(configDir, "config.yaml")
-	return os.WriteFile(configPath, []byte(content), 0644)
-}
-
-func formatStringSlice(s []string) string {
-	var quoted []string
-	for _, v := range s {
-		quoted = append(quoted, fmt.Sprintf("%q", v))
+	// Encode the struct into the Node tree
+	err = root.Encode(cfg)
+	if err != nil {
+		return fmt.Errorf("failed to encode config to yaml: %w", err)
 	}
-	return strings.Join(quoted, ", ")
-}
 
-// stripANSI removes ANSI escape sequences (e.g. \033[32m) from s.
-// Used to clean readline results that may contain color codes from
-// tab-completion candidates (.kdbx files are wrapped in green).
-func stripANSI(s string) string {
-	out := make([]byte, 0, len(s))
-	i := 0
-	for i < len(s) {
-		if s[i] == '\033' && i+1 < len(s) && s[i+1] == '[' {
-			i += 2
-			for i < len(s) && s[i] != 'm' {
-				i++
+	// Add comments. Expected structure: Document -> Mapping -> [Key/Value pairs]
+	// Root is Document (1), Root.Content[0] is Mapping (2).
+	if len(root.Content) > 0 && root.Content[0].Kind == yaml.MappingNode {
+		mapping := root.Content[0]
+
+		for i := 0; i < len(mapping.Content); i += 2 {
+			keyNode := mapping.Content[i]
+			valNode := mapping.Content[i+1]
+
+			if keyNode.Value == "general" && valNode.Kind == yaml.MappingNode {
+				for j := 0; j < len(valNode.Content); j += 2 {
+					genKey := valNode.Content[j]
+					if genKey.Value == "password_length" {
+						genKey.HeadComment = fmt.Sprintf("generated password length (min: %d, max: %d)", config.PasswordLengthMin, config.PasswordLengthMax)
+					}
+				}
 			}
-			i++ // skip 'm'
-			continue
 		}
-		out = append(out, s[i])
-		i++
 	}
-	return string(out)
-}
 
+	f, err := os.Create(filepath.Join(configDir, "config.yaml"))
+	if err != nil {
+		return err
+	}
+
+	encoder := yaml.NewEncoder(f)
+	encoder.SetIndent(2)
+	encodeErr := encoder.Encode(&root)
+
+	if closeErr := f.Close(); closeErr != nil {
+		// If encoding succeeded but closing failed (e.g., flush error), return the close error.
+		if encodeErr == nil {
+			return closeErr
+		}
+	}
+
+	return encodeErr
+}

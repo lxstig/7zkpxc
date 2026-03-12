@@ -191,10 +191,10 @@ sevenzip:
   default_args: ["-mhe=on", "-mx=9"]
 ```
 
-Override any value via environment variables with the `SZKPXC_` prefix:
+Override any value via environment variables with the `7ZKPXC_` prefix:
 
 ```bash
-export SZKPXC_GENERAL_KDBX_PATH="/other/db.kdbx"
+export 7ZKPXC_GENERAL_KDBX_PATH="/other/db.kdbx"
 ```
 
 ## How It Works

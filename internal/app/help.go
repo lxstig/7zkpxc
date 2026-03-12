@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -54,43 +55,26 @@ var commandOrder = map[string]int{
 
 // Helper to sort commands based on priority
 func sortedCommands(cmds []*cobra.Command) []*cobra.Command {
-	// Create a copy to sort
 	sorted := make([]*cobra.Command, len(cmds))
 	copy(sorted, cmds)
 
-	// Bubble sort for simplicity (list is tiny)
-	// or selection sort
-	for i := 0; i < len(sorted)-1; i++ {
-		for j := 0; j < len(sorted)-i-1; j++ {
-			c1 := sorted[j]
-			c2 := sorted[j+1]
-
-			p1, ok1 := commandOrder[c1.Name()]
-			if !ok1 {
-				p1 = 100
-			} // Default low priority
-
-			p2, ok2 := commandOrder[c2.Name()]
-			if !ok2 {
-				p2 = 100
-			}
-
-			// If priorities are different, sort by priority
-			if p1 < p2 {
-				// already correct order relative to each other?
-				// Ascending priority value (1 is top)
-				continue
-			} else if p1 > p2 {
-				// Swap
-				sorted[j], sorted[j+1] = sorted[j+1], sorted[j]
-			} else {
-				// Same priority, sort alphabetically
-				if c1.Name() > c2.Name() {
-					sorted[j], sorted[j+1] = sorted[j+1], sorted[j]
-				}
-			}
+	sort.Slice(sorted, func(i, j int) bool {
+		c1, c2 := sorted[i], sorted[j]
+		p1, ok1 := commandOrder[c1.Name()]
+		if !ok1 {
+			p1 = 100
 		}
-	}
+		p2, ok2 := commandOrder[c2.Name()]
+		if !ok2 {
+			p2 = 100
+		}
+
+		if p1 != p2 {
+			return p1 < p2
+		}
+		return c1.Name() < c2.Name()
+	})
+
 	return sorted
 }
 
@@ -116,31 +100,29 @@ func hasOtherFlags(cmd *cobra.Command) bool {
 	return has
 }
 
+func formatFlag(f *pflag.Flag) string {
+	line := fmt.Sprintf("      --%s", f.Name)
+	if f.Shorthand != "" {
+		line = fmt.Sprintf("  -%s, --%s", f.Shorthand, f.Name)
+	}
+	if f.Value.Type() != "bool" {
+		line += fmt.Sprintf(" %s", f.Value.Type())
+	}
+	pad := 30 - len(line)
+	if pad < 1 {
+		pad = 1
+	}
+	return line + strings.Repeat(" ", pad) + f.Usage + "\n"
+}
+
 // Helper to print usages for specific annotation
 func flagUsages(cmd *cobra.Command, annotation string) string {
 	var sb strings.Builder
 	cmd.Flags().VisitAll(func(f *pflag.Flag) {
 		if _, ok := f.Annotations[annotation]; ok {
-			// standard flag formatting
-			line := fmt.Sprintf("      --%s", f.Name)
-			if f.Shorthand != "" {
-				line = fmt.Sprintf("  -%s, --%s", f.Shorthand, f.Name)
-			}
-			if f.Value.Type() != "bool" {
-				line += fmt.Sprintf(" %s", f.DefValue) // Simplified
-			}
-			// Pad
-			pad := 30 - len(line)
-			if pad < 1 {
-				pad = 1
-			}
-			sb.WriteString(line)
-			sb.WriteString(strings.Repeat(" ", pad))
-			sb.WriteString(f.Usage)
-			sb.WriteString("\n")
+			sb.WriteString(formatFlag(f))
 		}
 	})
-	// Trim last newline to avoid extra gap
 	return strings.TrimRight(sb.String(), "\n")
 }
 
@@ -148,29 +130,8 @@ func flagUsages(cmd *cobra.Command, annotation string) string {
 func otherFlagUsages(cmd *cobra.Command) string {
 	var sb strings.Builder
 	cmd.Flags().VisitAll(func(f *pflag.Flag) {
-		isCustom := false
-		if _, ok := f.Annotations["compression"]; ok {
-			isCustom = true
-		}
-		if _, ok := f.Annotations["volume"]; ok {
-			isCustom = true
-		}
-
-		if !isCustom {
-			// standard flag formatting
-			line := fmt.Sprintf("      --%s", f.Name)
-			if f.Shorthand != "" {
-				line = fmt.Sprintf("  -%s, --%s", f.Shorthand, f.Name)
-			}
-
-			pad := 30 - len(line)
-			if pad < 1 {
-				pad = 1
-			}
-			sb.WriteString(line)
-			sb.WriteString(strings.Repeat(" ", pad))
-			sb.WriteString(f.Usage)
-			sb.WriteString("\n")
+		if len(f.Annotations) == 0 {
+			sb.WriteString(formatFlag(f))
 		}
 	})
 	return strings.TrimRight(sb.String(), "\n")

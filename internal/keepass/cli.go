@@ -3,7 +3,6 @@ package keepass
 import (
 	"bytes"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,8 +15,7 @@ import (
 
 type Client struct {
 	DatabasePath   string
-	KeyFile        string
-	masterPassword []byte // lowercase for encapsulation, zeroed on Close()
+	masterPassword []byte // zeroed on Close()
 }
 
 func New(dbPath string) *Client {
@@ -53,10 +51,8 @@ func (c *Client) getMasterPassword() []byte {
 	return c.masterPassword
 }
 
-// runCmd is the shared stdin-pipe helper for all keepassxc-cli invocations that
-// only need the master password on stdin (everything except AddEntry which also
-// sends the entry password). It starts the command, writes masterPassword + "\n",
-// closes stdin, waits for exit, and returns combined stdout+stderr bytes.
+// runCmd executes a keepassxc-cli command, writing the master password to stdin.
+// stdout and stderr are combined into the returned bytes (useful for error messages).
 func (c *Client) runCmd(cmd *exec.Cmd) ([]byte, error) {
 	var outBuf bytes.Buffer
 	cmd.Stdout = &outBuf
@@ -76,6 +72,63 @@ func (c *Client) runCmd(cmd *exec.Cmd) ([]byte, error) {
 	_ = stdin.Close()
 
 	if err := cmd.Wait(); err != nil {
+		return outBuf.Bytes(), err
+	}
+	return outBuf.Bytes(), nil
+}
+
+// runCmdQuiet executes a keepassxc-cli command.
+// stdout is captured and returned. stderr is captured and included in the error
+// if the command fails, otherwise it's discarded. Used by Search, GetPassword, GetAttribute.
+func (c *Client) runCmdQuiet(cmd *exec.Cmd) ([]byte, error) {
+	var outBuf bytes.Buffer
+	var errBuf bytes.Buffer
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &errBuf
+
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, err
+	}
+
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+
+	_, _ = stdin.Write(c.getMasterPassword())
+	_, _ = stdin.Write([]byte("\n"))
+	_ = stdin.Close()
+
+	if err := cmd.Wait(); err != nil {
+		// keepassxc-cli prints the password prompt to stderr.
+		// We want to extract any actual error message that follows it.
+		// Since the prompt text is localized we just look for
+		// the line ending with ":" or containing the DatabasePath.
+		var actualErrLines []string
+		for _, line := range strings.Split(errBuf.String(), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			// Heuristic: ignore lines that look like a password prompt
+			if strings.HasSuffix(line, ":") && strings.Contains(line, filepath.Base(c.DatabasePath)) {
+				continue
+			}
+			// keepassxc-cli predictably returns these English strings to stderr
+			// (even on localized setups) when a search yields nothing or an entry is missing.
+			// By ignoring them, we allow the caller to receive a plain "exit status 1"
+			// and treat it as a standard "Not Found", rather than a database/password failure.
+			if line == "No results for that search term." || line == "Entry not found." {
+				continue
+			}
+			actualErrLines = append(actualErrLines, line)
+		}
+
+		actualErrStr := strings.Join(actualErrLines, "\n")
+		// Bundle both the raw exit code error and the extracted string so callers can check it
+		if actualErrStr != "" {
+			return outBuf.Bytes(), fmt.Errorf("%w: %s", err, actualErrStr)
+		}
 		return outBuf.Bytes(), err
 	}
 	return outBuf.Bytes(), nil
@@ -191,8 +244,7 @@ func (c *Client) Mkdir(groupPath string) error {
 }
 
 // GroupExists checks if a group exists.
-// Returns false both when the group is absent and when the check itself fails;
-// callers that care about the distinction should use a different approach.
+// Returns false both when the group is absent and when the check itself fails.
 func (c *Client) GroupExists(path string) bool {
 	if err := c.EnsureUnlocked(); err != nil {
 		return false
@@ -211,31 +263,20 @@ func (c *Client) Search(query string) ([]string, error) {
 		return nil, err
 	}
 
-	cmd := buildCmd("search", c.DatabasePath, query)
-	cmd.Stderr = io.Discard // suppress "Enter password to unlock" prompt spam
-
-	var outBuf bytes.Buffer
-	cmd.Stdout = &outBuf
-
-	stdin, err := cmd.StdinPipe()
+	out, err := c.runCmdQuiet(buildCmd("search", c.DatabasePath, query))
 	if err != nil {
-		return nil, err
-	}
-
-	if err := cmd.Start(); err != nil {
-		return nil, err
-	}
-
-	_, _ = stdin.Write(c.getMasterPassword())
-	_, _ = stdin.Write([]byte("\n"))
-	_ = stdin.Close()
-
-	if err := cmd.Wait(); err != nil {
-		// keepassxc-cli returns exit status 1 when no records are found or error occurs
+		// keepassxc-cli returns exit status 1 when no records are found,
+		// but also when the master password is wrong.
+		// If runCmdQuiet found actual error text on stderr, it appended it
+		// (e.g. "exit status 1: Invalid credentials").
+		if strings.Contains(err.Error(), ": ") {
+			return nil, fmt.Errorf("KeePassXC error: %w", err)
+		}
+		// Otherwise, it just means "not found" (silent exit 1)
 		return nil, nil
 	}
 
-	lines := strings.Split(strings.TrimSpace(outBuf.String()), "\n")
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
 	var results []string
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
@@ -337,39 +378,25 @@ func (c *Client) GetPassword(entryPath string) ([]byte, error) {
 		return nil, err
 	}
 
-	cmd := buildCmd("show", "-s", "-a", "password", "-q", c.DatabasePath, entryPath)
-	cmd.Stderr = io.Discard // suppress "Enter password to unlock" prompt spam
-
-	var outBuf bytes.Buffer
-	cmd.Stdout = &outBuf
-
-	stdin, err := cmd.StdinPipe()
+	out, err := c.runCmdQuiet(buildCmd("show", "-s", "-a", "password", "-q", c.DatabasePath, entryPath))
 	if err != nil {
-		return nil, err
+		if strings.Contains(err.Error(), ": ") {
+			// Actually failed with a real error string
+			return nil, fmt.Errorf("failed to get password: %w", err)
+		}
+		// Otherwise, silent "not found"
+		return nil, fmt.Errorf("entry not found: %s", entryPath)
 	}
 
-	if err := cmd.Start(); err != nil {
-		return nil, err
-	}
-
-	_, _ = stdin.Write(c.getMasterPassword())
-	_, _ = stdin.Write([]byte("\n"))
-	_ = stdin.Close()
-
-	if err := cmd.Wait(); err != nil {
-		return nil, fmt.Errorf("failed to get password: %w", err)
-	}
-
-	password := bytes.TrimSpace(outBuf.Bytes())
+	password := bytes.TrimSpace(out)
 
 	// Create copy to own memory
 	passCopy := make([]byte, len(password))
 	copy(passCopy, password)
 
-	// Zero out the buffer
-	outBytes := outBuf.Bytes()
-	for i := range outBytes {
-		outBytes[i] = 0
+	// Zero out the original bytes
+	for i := range out {
+		out[i] = 0
 	}
 
 	return passCopy, nil
@@ -382,28 +409,10 @@ func (c *Client) GetAttribute(entryPath, attribute string) (string, error) {
 		return "", err
 	}
 
-	cmd := buildCmd("show", "-a", attribute, "-q", c.DatabasePath, entryPath)
-	cmd.Stderr = io.Discard // suppress "Enter password to unlock" prompt spam
-
-	var outBuf bytes.Buffer
-	cmd.Stdout = &outBuf
-
-	stdin, err := cmd.StdinPipe()
+	out, err := c.runCmdQuiet(buildCmd("show", "-a", attribute, "-q", c.DatabasePath, entryPath))
 	if err != nil {
-		return "", err
-	}
-
-	if err := cmd.Start(); err != nil {
-		return "", err
-	}
-
-	_, _ = stdin.Write(c.getMasterPassword())
-	_, _ = stdin.Write([]byte("\n"))
-	_ = stdin.Close()
-
-	if err := cmd.Wait(); err != nil {
 		return "", fmt.Errorf("failed to get attribute '%s': %w", attribute, err)
 	}
 
-	return strings.TrimSpace(outBuf.String()), nil
+	return strings.TrimSpace(string(out)), nil
 }

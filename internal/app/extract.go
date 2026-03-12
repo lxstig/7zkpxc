@@ -2,7 +2,6 @@ package app
 
 import (
 	"fmt"
-	"path/filepath"
 
 	"github.com/lxstig/7zkpxc/internal/config"
 	"github.com/lxstig/7zkpxc/internal/keepass"
@@ -27,71 +26,20 @@ func runExtract(cmd *cobra.Command, args []string) error {
 	cmd.SilenceUsage = true
 	archivePath := args[0]
 
-	cfg, err := config.LoadConfig()
-	if err != nil {
-		return err
-	}
+	return withKeePassArchive(archivePath, false, func(cfg *config.Config, kp *keepass.Client, password []byte, entryPath string) error {
+		fmt.Printf("Extracting '%s'...\n", archivePath)
+		sevenZipArgs := []string{"x", archivePath}
 
-	absPath, err := filepath.Abs(archivePath)
-	if err != nil {
-		absPath = archivePath
-	}
-
-	kp := keepass.New(cfg.General.KdbxPath)
-	defer kp.Close()
-
-	// Use the fallback strategy to find the password:
-	// 1. Normalized name (e.g., archive.7z.001 -> archive.7z)
-	// 2. Original filename
-	// 3. Base name without extension (for split archives)
-	fmt.Printf("Fetching password for '%s'...\n", archivePath)
-	password, entryPath, needsMigration, err := resolvePassword(kp, cfg.General.DefaultGroup, archivePath)
-	if err != nil {
-		if IsPasswordNotFound(err) {
-			return fmt.Errorf("failed to get password (is the entry in '%s'?): %w", cfg.General.DefaultGroup, err)
+		outputDir, _ := cmd.Flags().GetString("output")
+		if outputDir != "" {
+			sevenZipArgs = append(sevenZipArgs, "-o"+outputDir)
 		}
-		return fmt.Errorf("failed to get password: %w", err)
-	}
 
-	// Build 7z extract args
-	fmt.Printf("Extracting '%s'...\n", archivePath)
-	sevenZipArgs := []string{"x", archivePath}
-
-	outputDir, _ := cmd.Flags().GetString("output")
-	if outputDir != "" {
-		sevenZipArgs = append(sevenZipArgs, "-o"+outputDir)
-	}
-
-	runErr := sevenzip.Run(cfg.SevenZip.BinaryPath, password, sevenZipArgs)
-
-	if runErr == nil && needsMigration {
-		// Migrate while password bytes are still valid (BEFORE zeroing)
-		lastKnownPath := entryPath
-		if lk, e := kp.GetAttribute(entryPath, "Username"); e == nil && lk != "" {
-			lastKnownPath = lk
+		if runErr := sevenzip.Run(cfg.SevenZip.BinaryPath, password, sevenZipArgs); runErr != nil {
+			return fmt.Errorf("extraction failed: %w", runErr)
 		}
-		var migrateErr error
-		entryPath, migrateErr = migrateEntry(kp, cfg.General.DefaultGroup, entryPath, password, lastKnownPath)
-		if migrateErr != nil {
-			fmt.Printf("Note: could not migrate entry to new format: %v\n", migrateErr)
-		} else {
-			fmt.Println("(Entry migrated to new format.)")
-		}
-	}
 
-	if runErr == nil {
-		updatePathIfMoved(kp, entryPath, absPath)
-	}
-
-	// Zero password after all uses
-	for i := range password {
-		password[i] = 0
-	}
-
-	if runErr != nil {
-		return fmt.Errorf("extraction failed: %w", runErr)
-	}
-
-	fmt.Println("Success! Archive extracted.")
-	return nil
+		fmt.Println("Success! Archive extracted.")
+		return nil
+	})
 }

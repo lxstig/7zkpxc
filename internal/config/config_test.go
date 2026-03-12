@@ -9,10 +9,11 @@ import (
 	"github.com/spf13/viper"
 )
 
-// resetViper clears all global viper state so tests are fully isolated.
+// resetViper clears all global viper state and config cache so tests are fully isolated.
 func resetViper(t *testing.T) {
 	t.Helper()
 	viper.Reset()
+	ClearCache()
 }
 
 func TestLoadConfig_Defaults(t *testing.T) {

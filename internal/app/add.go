@@ -72,7 +72,7 @@ func runAdd(cmd *cobra.Command, args []string) error {
 
 	// Dispatch based on whether the archive already exists
 	if _, err := os.Stat(archiveName); err == nil {
-		return runAddUpdate(cmd, cfg, kp, archiveName, files, extraFlags)
+		return runAddUpdate(cmd, archiveName, files, extraFlags)
 	}
 	return runAddCreate(cmd, cfg, kp, archiveName, files, extraFlags)
 }
@@ -149,94 +149,55 @@ func runAddCreate(
 	return nil
 }
 
-// runAddUpdate retrieves the existing password from KeePassXC and appends
-// files to the already-encrypted archive. No new KeePass entry is created.
 func runAddUpdate(
 	cmd *cobra.Command,
-	cfg *config.Config,
-	kp *keepass.Client,
 	archiveName string,
 	files, extraFlags []string,
 ) error {
 	fmt.Printf("Archive '%s' already exists — fetching password from KeePassXC...\n", archiveName)
 
-	password, entryPath, needsMigration, err := resolvePassword(kp, cfg.General.DefaultGroup, archiveName)
-	if err != nil {
-		if IsPasswordNotFound(err) {
-			return fmt.Errorf("archive '%s' exists on disk but has no entry in KeePassXC.\n"+
-				"If you created it outside 7zkpxc, you cannot use this command to update it", archiveName)
+	return withKeePassArchive(archiveName, false, func(cfg *config.Config, kp *keepass.Client, password []byte, entryPath string) error {
+		// Build 7z update arguments.
+		// Do NOT pass default_args (e.g. -mhe=on) — the archive already has its
+		// encryption settings; re-specifying them may conflict.
+		// Do NOT pass -p — 7z detects the existing encryption and prompts itself.
+		fmt.Printf("Updating archive '%s'...\n", archiveName)
+		sevenZipArgs := []string{"a"}
+
+		sevenZipArgs = append(sevenZipArgs, getCompressionFlags(cmd)...)
+		sevenZipArgs = append(sevenZipArgs, archiveName)
+		sevenZipArgs = append(sevenZipArgs, files...)
+		sevenZipArgs = append(sevenZipArgs, extraFlags...)
+
+		if err := sevenzip.Run(cfg.SevenZip.BinaryPath, password, sevenZipArgs); err != nil {
+			return fmt.Errorf("failed to update archive: %w", err)
 		}
-		return fmt.Errorf("failed to fetch password: %w", err)
-	}
-	defer func() {
-		for i := range password {
-			password[i] = 0
-		}
-	}()
 
-	// Build 7z update arguments.
-	// Do NOT pass default_args (e.g. -mhe=on) — the archive already has its
-	// encryption settings; re-specifying them may conflict.
-	// Do NOT pass -p — 7z detects the existing encryption and prompts itself.
-	fmt.Printf("Updating archive '%s'...\n", archiveName)
-	sevenZipArgs := []string{"a"}
-
-	// Honor compression level override if explicitly set
-	fast, _ := cmd.Flags().GetBool("fast")
-	best, _ := cmd.Flags().GetBool("best")
-	if fast {
-		sevenZipArgs = append(sevenZipArgs, "-mx=1")
-	} else if best {
-		sevenZipArgs = append(sevenZipArgs, "-mx=9")
-	}
-
-	sevenZipArgs = append(sevenZipArgs, archiveName)
-	sevenZipArgs = append(sevenZipArgs, files...)
-	sevenZipArgs = append(sevenZipArgs, extraFlags...)
-
-	if err := sevenzip.Run(cfg.SevenZip.BinaryPath, password, sevenZipArgs); err != nil {
-		return fmt.Errorf("failed to update archive: %w", err)
-	}
-
-	// Migrate old-format entry while password is still valid (defer zeroes later)
-	if needsMigration {
-		lastKnownPath := entryPath
-		if lk, e := kp.GetAttribute(entryPath, "Username"); e == nil && lk != "" {
-			lastKnownPath = lk
-		}
-		var migrateErr error
-		entryPath, migrateErr = migrateEntry(kp, cfg.General.DefaultGroup, entryPath, password, lastKnownPath)
-		if migrateErr != nil {
-			fmt.Printf("Note: could not migrate entry to new format: %v\n", migrateErr)
-		} else {
-			fmt.Println("(Entry migrated to new format.)")
-		}
-	}
-
-	absArchiveName, err := filepath.Abs(archiveName)
-	if err != nil {
-		absArchiveName = archiveName
-	}
-	updatePathIfMoved(kp, entryPath, absArchiveName)
-
-	fmt.Println("Files added to existing archive successfully.")
-	return nil
+		fmt.Println("Files added to existing archive successfully.")
+		return nil
+	})
 }
 
-// buildCompressionArgs builds the 7z argument list for a new archive.
-func buildCompressionArgs(cmd *cobra.Command, defaultArgs []string) []string {
-	args := []string{"a"}
-	args = append(args, defaultArgs...)
-
+func getCompressionFlags(cmd *cobra.Command) []string {
+	var args []string
 	fast, _ := cmd.Flags().GetBool("fast")
 	best, _ := cmd.Flags().GetBool("best")
-	volume, _ := cmd.Flags().GetString("volume")
 
 	if fast {
 		args = append(args, "-mx=1")
 	} else if best {
 		args = append(args, "-mx=9")
 	}
+	return args
+}
+
+// buildCompressionArgs builds the 7z argument list for a new archive.
+func buildCompressionArgs(cmd *cobra.Command, defaultArgs []string) []string {
+	args := []string{"a"}
+	args = append(args, defaultArgs...)
+	args = append(args, getCompressionFlags(cmd)...)
+
+	volume, _ := cmd.Flags().GetString("volume")
 	if volume != "" {
 		args = append(args, "-v"+volume)
 	}
