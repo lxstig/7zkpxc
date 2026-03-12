@@ -31,11 +31,6 @@ func runRename(cmd *cobra.Command, args []string) error {
 	oldArchivePath := args[0]
 	newArchivePath := args[1]
 
-	cfg, err := config.LoadConfig()
-	if err != nil {
-		return err
-	}
-
 	// Resolve absolute paths upfront
 	absOld, err := filepath.Abs(oldArchivePath)
 	if err != nil {
@@ -65,44 +60,31 @@ func runRename(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to create destination directory: %w", err)
 	}
 
-	// 4. Look up the KeePass entry (before touching the file)
-	kp := keepass.New(cfg.General.KdbxPath)
-	defer kp.Close()
-
-	fmt.Printf("Locating KeePass entry for '%s'...\n", oldArchivePath)
-	password, oldKeePassPath, _, err := resolvePassword(kp, cfg.General.DefaultGroup, oldArchivePath)
-	if err != nil {
-		return fmt.Errorf("could not find KeePass entry for '%s': %w", oldArchivePath, err)
-	}
-	defer func() {
-		for i := range password {
-			password[i] = 0
+	return withKeePassArchive(oldArchivePath, true, func(cfg *config.Config, kp *keepass.Client, password []byte, oldKeePassPath string) error {
+		// 4.5 Verify the password is correct BEFORE touching anything on disk.
+		//     This protects against accidental wrong-entry selection in multi-match.
+		//     'sevenzip t' (test) decrypts without extracting; any decryption failure
+		//     means the selected entry's password does not match this archive.
+		fmt.Printf("Verifying password against archive...\n")
+		if err := sevenzip.Run(cfg.SevenZip.BinaryPath, password, []string{"t", absOld}); err != nil {
+			return fmt.Errorf("password verification failed — wrong entry selected or archive is corrupt: %w", err)
 		}
-	}()
 
-	// 4.5 Verify the password is correct BEFORE touching anything on disk.
-	//     This protects against accidental wrong-entry selection in multi-match.
-	//     'sevenzip t' (test) decrypts without extracting; any decryption failure
-	//     means the selected entry's password does not match this archive.
-	fmt.Printf("Verifying password against archive...\n")
-	if err := sevenzip.Run(cfg.SevenZip.BinaryPath, password, []string{"t", absOld}); err != nil {
-		return fmt.Errorf("password verification failed — wrong entry selected or archive is corrupt: %w", err)
-	}
+		// 5. Move the file on disk (same-device: rename; cross-device: copy+delete)
+		fmt.Printf("Moving '%s' → '%s'...\n", absOld, absNew)
+		crossDevice, err := moveFile(absOld, absNew, srcInfo)
+		if err != nil {
+			return fmt.Errorf("failed to move archive on disk: %w", err)
+		}
 
-	// 5. Move the file on disk (same-device: rename; cross-device: copy+delete)
-	fmt.Printf("Moving '%s' → '%s'...\n", absOld, absNew)
-	crossDevice, err := moveFile(absOld, absNew, srcInfo)
-	if err != nil {
-		return fmt.Errorf("failed to move archive on disk: %w", err)
-	}
+		// 6+7. Update KeePass: add new entry, rollback file move on failure, delete old.
+		if err := applyRenameKeePass(kp, cfg.General.DefaultGroup, oldKeePassPath, absOld, absNew, password, srcInfo, crossDevice); err != nil {
+			return err
+		}
 
-	// 6+7. Update KeePass: add new entry, rollback file move on failure, delete old.
-	if err := applyRenameKeePass(kp, cfg.General.DefaultGroup, oldKeePassPath, absOld, absNew, password, srcInfo, crossDevice); err != nil {
-		return err
-	}
-
-	fmt.Println("Done. Archive moved and KeePassXC entry updated.")
-	return nil
+		fmt.Println("Done. Archive moved and KeePassXC entry updated.")
+		return nil
+	})
 }
 
 // applyRenameKeePass adds a new UUID-titled KeePass entry for the destination
@@ -132,9 +114,7 @@ func applyRenameKeePass(
 
 	fmt.Printf("Cleaning up old KeePass entry ('%s')...\n", oldKeePassPath)
 	if err := kp.DeleteEntry(oldKeePassPath); err != nil {
-		fmt.Printf("Warning: could not delete old entry '%s': %v\n", oldKeePassPath, err)
-		fmt.Println("The archive was moved and the new entry was created successfully.")
-		fmt.Println("You may want to delete the old entry manually from KeePassXC.")
+		return fmt.Errorf("could not delete old entry '%s' (archive was moved and new entry created successfully, but your database now contains an orphaned duplicate): %w", oldKeePassPath, err)
 	}
 	return nil
 }

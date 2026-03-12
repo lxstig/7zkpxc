@@ -3,6 +3,7 @@ package app
 import (
 	"fmt"
 	"os/exec"
+	"strings"
 
 	"github.com/lxstig/7zkpxc/internal/config"
 	"github.com/spf13/cobra"
@@ -107,11 +108,6 @@ func joinWords(words []string) string {
 	case 1:
 		return words[0]
 	default:
-		result := words[0]
-		for i := 1; i < len(words)-1; i++ {
-			result += ", " + words[i]
-		}
-		result += " and " + words[len(words)-1]
-		return result
+		return strings.Join(words[:len(words)-1], ", ") + " and " + words[len(words)-1]
 	}
 }

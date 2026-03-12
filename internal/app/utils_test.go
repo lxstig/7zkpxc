@@ -4,11 +4,13 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 )
 
 // MockPasswordProvider for testing
 type MockPasswordProvider struct {
+	mu         sync.Mutex
 	passwords  map[string][]byte
 	attributes map[string]map[string]string // entryPath -> attribute -> value
 	calls      []string
@@ -23,6 +25,8 @@ func NewMockPasswordProvider() *MockPasswordProvider {
 }
 
 func (m *MockPasswordProvider) GetPassword(key string) ([]byte, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.calls = append(m.calls, key)
 	if pass, ok := m.passwords[key]; ok {
 		return pass, nil
@@ -31,10 +35,14 @@ func (m *MockPasswordProvider) GetPassword(key string) ([]byte, error) {
 }
 
 func (m *MockPasswordProvider) SetPassword(key string, password []byte) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.passwords[key] = password
 }
 
 func (m *MockPasswordProvider) SetAttribute(entryPath, attribute, value string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.attributes[entryPath] == nil {
 		m.attributes[entryPath] = make(map[string]string)
 	}
@@ -42,6 +50,8 @@ func (m *MockPasswordProvider) SetAttribute(entryPath, attribute, value string) 
 }
 
 func (m *MockPasswordProvider) GetAttribute(entryPath, attribute string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.calls = append(m.calls, "attr:"+entryPath+":"+attribute)
 	if attrs, ok := m.attributes[entryPath]; ok {
 		if val, ok := attrs[attribute]; ok {
@@ -52,6 +62,8 @@ func (m *MockPasswordProvider) GetAttribute(entryPath, attribute string) (string
 }
 
 func (m *MockPasswordProvider) Search(query string) ([]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.calls = append(m.calls, "search:"+query)
 	var results []string
 	for k := range m.passwords {
@@ -64,6 +76,8 @@ func (m *MockPasswordProvider) Search(query string) ([]string, error) {
 }
 
 func (m *MockPasswordProvider) UpdateEntryUsername(entryPath, username string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.calls = append(m.calls, "update-username:"+entryPath+":"+username)
 	if m.attributes[entryPath] == nil {
 		m.attributes[entryPath] = make(map[string]string)
@@ -73,7 +87,12 @@ func (m *MockPasswordProvider) UpdateEntryUsername(entryPath, username string) e
 }
 
 func (m *MockPasswordProvider) GetCalls() []string {
-	return m.calls
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	// Return a copy to prevent race conditions on the slice returned
+	copied := make([]string, len(m.calls))
+	copy(copied, m.calls)
+	return copied
 }
 
 // -------------------------------------------------------------------
@@ -655,6 +674,7 @@ func TestGetPasswordForArchive_EdgeCases(t *testing.T) {
 }
 
 func TestPasswordNotFoundError(t *testing.T) {
+	t.Parallel()
 	err := &PasswordNotFoundError{
 		ArchiveName: "test.7z",
 		Tried:       []string{"backups/test.7z", "test.7z"},
