@@ -122,3 +122,58 @@ func TestGeneratePassword_Uniqueness(t *testing.T) {
 		passwords[string(pw)] = struct{}{}
 	}
 }
+
+func TestNew_Defaults(t *testing.T) {
+	client := New("/test/db.kdbx")
+	if client.DatabasePath != "/test/db.kdbx" {
+		t.Errorf("DatabasePath = %q, want %q", client.DatabasePath, "/test/db.kdbx")
+	}
+	if client.masterPassword != nil {
+		t.Error("masterPassword should be nil on new client")
+	}
+}
+
+func TestClearMasterPassword(t *testing.T) {
+	secret := []byte("my-secret-password")
+	c := &Client{
+		masterPassword: secret,
+	}
+
+	c.clearMasterPassword()
+
+	// Verify bytes were zeroed in-place
+	for i, b := range secret {
+		if b != 0 {
+			t.Fatalf("byte at index %d not zeroed: got %d", i, b)
+		}
+	}
+	if c.masterPassword != nil {
+		t.Error("masterPassword should be nil after clearMasterPassword")
+	}
+}
+
+func TestClearMasterPassword_AlreadyNil(t *testing.T) {
+	c := &Client{masterPassword: nil}
+	// Should not panic
+	c.clearMasterPassword()
+}
+
+func TestBuildCmd(t *testing.T) {
+	cmd := buildCmd("show", "--quiet", "/db.kdbx", "entry")
+	args := cmd.Args
+	// First arg is the binary name
+	if args[0] != "keepassxc-cli" {
+		t.Errorf("args[0] = %q, want \"keepassxc-cli\"", args[0])
+	}
+	// Should contain all passed args
+	found := false
+	for _, a := range args {
+		if a == "--quiet" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected --quiet in args: %v", args)
+	}
+}

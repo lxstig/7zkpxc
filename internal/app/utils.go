@@ -524,7 +524,7 @@ type EntryMigrator interface {
 // migrateEntry upgrades an old-format KeePass entry to the new UUID title format.
 // It silently adds a new entry and deletes the old one.
 // Failures are non-fatal; the caller should log a warning at most.
-func migrateEntry(kp *keepass.Client, prefix, oldEntryPath string, password []byte, lastKnownPath string) (newEntryPath string, err error) {
+func migrateEntry(kp EntryMigrator, prefix, oldEntryPath string, password []byte, lastKnownPath string) (newEntryPath string, err error) {
 	basename := filepath.Base(lastKnownPath)
 	if basename == "" || basename == "." {
 		basename = filepath.Base(oldEntryPath)
