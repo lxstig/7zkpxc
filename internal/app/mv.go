@@ -14,20 +14,20 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var renameCmd = &cobra.Command{
-	Use:     "rename <old_archive_path> <new_archive_path>",
+var mvCmd = &cobra.Command{
+	Use:     "mv <old_archive_path> <new_archive_path>",
 	Short:   "Rename or move an archive and update its KeePassXC entry",
 	Long:    `Renames or moves an archive file on disk and updates the corresponding entry inside the KeePassXC database. Both the file system operation and the KeePass record are updated atomically: if any step fails the previous steps are rolled back. Cross-device moves (different mount points) are handled transparently via copy+delete.`,
 	Args:    cobra.ExactArgs(2),
-	RunE:    runRename,
+	RunE:    runMv,
 	GroupID: "actions",
 }
 
 func init() {
-	rootCmd.AddCommand(renameCmd)
+	rootCmd.AddCommand(mvCmd)
 }
 
-func runRename(cmd *cobra.Command, args []string) error {
+func runMv(cmd *cobra.Command, args []string) error {
 	oldArchivePath := args[0]
 	newArchivePath := args[1]
 

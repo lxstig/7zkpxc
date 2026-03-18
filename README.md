@@ -134,7 +134,7 @@ sudo make purge              # Removes everything including ~/.config/7zkpxc
 7zkpxc x secrets.7z
 
 # 5. Rename or move an archive (updates the file AND the KeePassXC entry)
-7zkpxc rename secrets.7z ~/backup/secrets-2026.7z
+7zkpxc mv secrets.7z ~/backup/secrets-2026.7z
 
 # 6. Remove the KeePassXC entry and the local archive when you no longer need them
 7zkpxc rm secrets.7z
@@ -154,7 +154,7 @@ sudo make purge              # Removes everything including ~/.config/7zkpxc
 | `7zkpxc d <archive> [files...]` | Delete specific files from inside an archive |
 | `7zkpxc rn <archive> <old> <new>` | Rename files inside an archive |
 | `7zkpxc rm <archive>` | Delete the KeePassXC entry and the local archive file |
-| `7zkpxc rename <old> <new>` | Move the archive on disk and update its KeePassXC entry |
+| `7zkpxc mv <old> <new>` | Move the archive on disk and update its KeePassXC entry |
 | `7zkpxc version` | Print version, commit, and build date |
 
 ### Flags
@@ -227,7 +227,7 @@ export 7ZKPXC_GENERAL_KDBX_PATH="/other/db.kdbx"
    - Global search by filename (handles moved archives)
 2. Pipes the password to 7-Zip via PTY.
 
-**Renaming or moving (`rename`):**
+**Renaming or moving (`mv`):**
 1. Looks up the existing KeePassXC entry.
 2. Moves the archive file on disk (`os.Rename`).
 3. Creates a new KeePassXC entry for the new path.

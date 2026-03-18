@@ -123,21 +123,21 @@ func TestRmCommand_Flags(t *testing.T) {
 	}
 }
 
-func TestRenameCommand_Exists(t *testing.T) {
-	if renameCmd == nil {
-		t.Fatal("renameCmd is nil")
+func TestMvCommand_Exists(t *testing.T) {
+	if mvCmd == nil {
+		t.Fatal("mvCmd is nil")
 	}
-	if renameCmd.Use != "rename <old_archive_path> <new_archive_path>" {
-		t.Errorf("renameCmd.Use = %q, want %q", renameCmd.Use, "rename <old_archive_path> <new_archive_path>")
+	if mvCmd.Use != "mv <old_archive_path> <new_archive_path>" {
+		t.Errorf("mvCmd.Use = %q, want %q", mvCmd.Use, "mv <old_archive_path> <new_archive_path>")
 	}
-	if renameCmd.GroupID != "actions" {
-		t.Errorf("renameCmd.GroupID = %q, want %q", renameCmd.GroupID, "actions")
+	if mvCmd.GroupID != "actions" {
+		t.Errorf("mvCmd.GroupID = %q, want %q", mvCmd.GroupID, "actions")
 	}
 }
 
-func TestRenameCommand_NoAliases(t *testing.T) {
-	if len(renameCmd.Aliases) != 0 {
-		t.Errorf("renameCmd.Aliases = %v, want empty (no aliases allowed)", renameCmd.Aliases)
+func TestMvCommand_NoAliases(t *testing.T) {
+	if len(mvCmd.Aliases) != 0 {
+		t.Errorf("mvCmd.Aliases = %v, want empty (no aliases allowed)", mvCmd.Aliases)
 	}
 }
 
@@ -189,7 +189,7 @@ func TestSubcommands_Registered(t *testing.T) {
 		"e":       false,
 		"rn":      false,
 		"u":       false,
-		"rename":  false,
+		"mv":      false,
 		"version": false,
 	}
 
