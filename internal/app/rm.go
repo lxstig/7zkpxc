@@ -11,21 +11,21 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var deleteCmd = &cobra.Command{
-	Use:     "d <archive_path>",
-	Short:   "Delete KeePassXC entry for an archive",
-	Long:    `Removes the password entry stored in KeePassXC for the given archive. This does NOT delete the archive file itself.`,
+var rmCmd = &cobra.Command{
+	Use:     "rm <archive_path>",
+	Short:   "Delete KeePassXC entry and the archive file",
+	Long:    `Removes the password entry stored in KeePassXC for the given archive, and prompts to delete the local archive file.`,
 	Args:    cobra.ExactArgs(1),
-	RunE:    runDelete,
+	RunE:    runRm,
 	GroupID: "actions",
 }
 
 func init() {
-	deleteCmd.Flags().BoolP("force", "f", false, "Skip confirmation prompt")
-	rootCmd.AddCommand(deleteCmd)
+	rmCmd.Flags().BoolP("force", "f", false, "Skip confirmation prompt")
+	rootCmd.AddCommand(rmCmd)
 }
 
-func runDelete(cmd *cobra.Command, args []string) error {
+func runRm(cmd *cobra.Command, args []string) error {
 	cmd.SilenceUsage = true
 	archivePath := args[0]
 
@@ -52,6 +52,16 @@ func runDelete(cmd *cobra.Command, args []string) error {
 		}
 
 		fmt.Printf("Entry '%s' deleted from KeePassXC.\n", entryPath)
+
+		// Also delete the local archive file
+		if err := os.Remove(archivePath); err != nil {
+			if !os.IsNotExist(err) {
+				fmt.Printf("Warning: failed to delete local archive file '%s': %v\n", archivePath, err)
+			}
+		} else {
+			fmt.Printf("Local archive file '%s' deleted.\n", archivePath)
+		}
+
 		return nil
 	})
 }

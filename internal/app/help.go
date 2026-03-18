@@ -45,12 +45,16 @@ Use "{{.CommandPath}} [command] --help" for more information about a command.{{e
 var commandOrder = map[string]int{
 	"init":    1,
 	"a":       2,
-	"x":       3,
-	"l":       4,
-	"d":       5,
-	"rename":  6,
-	"version": 7,
-	// others follow
+	"u":       3,
+	"d":       4,
+	"rn":      5,
+	"x":       6,
+	"e":       7,
+	"l":       8,
+	"t":       9,
+	"rename":  10,
+	"rm":      11,
+	"version": 12,
 }
 
 // Helper to sort commands based on priority

@@ -98,25 +98,25 @@ func TestExtractCommand_Flags(t *testing.T) {
 	}
 }
 
-func TestDeleteCommand_Exists(t *testing.T) {
-	if deleteCmd == nil {
-		t.Fatal("deleteCmd is nil")
+func TestRmCommand_Exists(t *testing.T) {
+	if rmCmd == nil {
+		t.Fatal("rmCmd is nil")
 	}
-	if deleteCmd.Use != "d <archive_path>" {
-		t.Errorf("deleteCmd.Use = %q, want %q", deleteCmd.Use, "d <archive_path>")
-	}
-}
-
-func TestDeleteCommand_GroupID(t *testing.T) {
-	if deleteCmd.GroupID != "actions" {
-		t.Errorf("deleteCmd.GroupID = %q, want %q", deleteCmd.GroupID, "actions")
+	if rmCmd.Use != "rm <archive_path>" {
+		t.Errorf("rmCmd.Use = %q, want %q", rmCmd.Use, "rm <archive_path>")
 	}
 }
 
-func TestDeleteCommand_Flags(t *testing.T) {
-	flag := deleteCmd.Flags().Lookup("force")
+func TestRmCommand_GroupID(t *testing.T) {
+	if rmCmd.GroupID != "actions" {
+		t.Errorf("rmCmd.GroupID = %q, want %q", rmCmd.GroupID, "actions")
+	}
+}
+
+func TestRmCommand_Flags(t *testing.T) {
+	flag := rmCmd.Flags().Lookup("force")
 	if flag == nil {
-		t.Fatal("Flag 'force' not found on delete command")
+		t.Fatal("Flag 'force' not found on rm command")
 	}
 	if flag.Shorthand != "f" {
 		t.Errorf("Flag 'force' shorthand = %q, want %q", flag.Shorthand, "f")
@@ -184,6 +184,11 @@ func TestSubcommands_Registered(t *testing.T) {
 		"x":       false,
 		"l":       false,
 		"d":       false,
+		"rm":      false,
+		"t":       false,
+		"e":       false,
+		"rn":      false,
+		"u":       false,
 		"rename":  false,
 		"version": false,
 	}
