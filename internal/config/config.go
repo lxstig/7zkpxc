@@ -21,12 +21,12 @@ type Config struct {
 }
 
 type GeneralConfig struct {
-	KdbxPath       string `mapstructure:"kdbx_path" yaml:"kdbx_path"`
-	DefaultGroup   string `mapstructure:"default_group" yaml:"default_group"`
+	KdbxPath     string `mapstructure:"kdbx_path" yaml:"kdbx_path"`
+	DefaultGroup string `mapstructure:"default_group" yaml:"default_group"`
 	// UseKeyring is persisted in the config file but not yet acted on.
 	// TODO: implement OS keyring integration (e.g. via keyring package).
-	UseKeyring     bool   `mapstructure:"use_keyring" yaml:"use_keyring"`
-	PasswordLength int    `mapstructure:"password_length" yaml:"password_length"`
+	UseKeyring     bool `mapstructure:"use_keyring" yaml:"use_keyring"`
+	PasswordLength int  `mapstructure:"password_length" yaml:"password_length"`
 }
 
 type SevenZipConfig struct {

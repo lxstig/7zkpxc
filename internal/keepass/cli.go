@@ -51,87 +51,112 @@ func (c *Client) getMasterPassword() []byte {
 	return c.masterPassword
 }
 
-// runCmd executes a keepassxc-cli command, writing the master password to stdin.
-// stdout and stderr are combined into the returned bytes (useful for error messages).
-func (c *Client) runCmd(cmd *exec.Cmd) ([]byte, error) {
-	var outBuf bytes.Buffer
-	cmd.Stdout = &outBuf
-	cmd.Stderr = &outBuf
+func (c *Client) runCmd(args ...string) ([]byte, error) {
+	for {
+		if err := c.EnsureUnlocked(); err != nil {
+			return nil, err
+		}
 
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return nil, err
+		cmd := buildCmd(args...)
+		var outBuf bytes.Buffer
+		cmd.Stdout = &outBuf
+		cmd.Stderr = &outBuf
+
+		stdin, err := cmd.StdinPipe()
+		if err != nil {
+			return nil, err
+		}
+
+		if err := cmd.Start(); err != nil {
+			return nil, err
+		}
+
+		_, _ = stdin.Write(c.getMasterPassword())
+		_, _ = stdin.Write([]byte("\n"))
+		_ = stdin.Close()
+
+		err = cmd.Wait()
+		if err != nil {
+			errStr := outBuf.String()
+			// Check if the error is an incorrect master password
+			if strings.Contains(errStr, "Invalid credentials") || strings.Contains(errStr, "HMAC mismatch") {
+				fmt.Println("\033[31mError: Invalid KeePassXC master password. Please try again.\033[0m")
+				c.clearMasterPassword()
+				continue
+			}
+			return outBuf.Bytes(), err
+		}
+		return outBuf.Bytes(), nil
 	}
-
-	if err := cmd.Start(); err != nil {
-		return nil, err
-	}
-
-	_, _ = stdin.Write(c.getMasterPassword())
-	_, _ = stdin.Write([]byte("\n"))
-	_ = stdin.Close()
-
-	if err := cmd.Wait(); err != nil {
-		return outBuf.Bytes(), err
-	}
-	return outBuf.Bytes(), nil
 }
 
-// runCmdQuiet executes a keepassxc-cli command.
-// stdout is captured and returned. stderr is captured and included in the error
-// if the command fails, otherwise it's discarded. Used by Search, GetPassword, GetAttribute.
-func (c *Client) runCmdQuiet(cmd *exec.Cmd) ([]byte, error) {
-	var outBuf bytes.Buffer
-	var errBuf bytes.Buffer
-	cmd.Stdout = &outBuf
-	cmd.Stderr = &errBuf
-
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return nil, err
-	}
-
-	if err := cmd.Start(); err != nil {
-		return nil, err
-	}
-
-	_, _ = stdin.Write(c.getMasterPassword())
-	_, _ = stdin.Write([]byte("\n"))
-	_ = stdin.Close()
-
-	if err := cmd.Wait(); err != nil {
-		// keepassxc-cli prints the password prompt to stderr.
-		// We want to extract any actual error message that follows it.
-		// Since the prompt text is localized we just look for
-		// the line ending with ":" or containing the DatabasePath.
-		var actualErrLines []string
-		for _, line := range strings.Split(errBuf.String(), "\n") {
-			line = strings.TrimSpace(line)
-			if line == "" {
-				continue
-			}
-			// Heuristic: ignore lines that look like a password prompt
-			if strings.HasSuffix(line, ":") && strings.Contains(line, filepath.Base(c.DatabasePath)) {
-				continue
-			}
-			// keepassxc-cli predictably returns these English strings to stderr
-			// (even on localized setups) when a search yields nothing or an entry is missing.
-			// By ignoring them, we allow the caller to receive a plain "exit status 1"
-			// and treat it as a standard "Not Found", rather than a database/password failure.
-			if line == "No results for that search term." || line == "Entry not found." {
-				continue
-			}
-			actualErrLines = append(actualErrLines, line)
+func (c *Client) runCmdQuiet(args ...string) ([]byte, error) {
+	for {
+		if err := c.EnsureUnlocked(); err != nil {
+			return nil, err
 		}
 
-		actualErrStr := strings.Join(actualErrLines, "\n")
-		// Bundle both the raw exit code error and the extracted string so callers can check it
-		if actualErrStr != "" {
-			return outBuf.Bytes(), fmt.Errorf("%w: %s", err, actualErrStr)
+		cmd := buildCmd(args...)
+		var outBuf bytes.Buffer
+		var errBuf bytes.Buffer
+		cmd.Stdout = &outBuf
+		cmd.Stderr = &errBuf
+
+		stdin, err := cmd.StdinPipe()
+		if err != nil {
+			return nil, err
 		}
-		return outBuf.Bytes(), err
+
+		if err := cmd.Start(); err != nil {
+			return nil, err
+		}
+
+		_, _ = stdin.Write(c.getMasterPassword())
+		_, _ = stdin.Write([]byte("\n"))
+		_ = stdin.Close()
+
+		err = cmd.Wait()
+		if err != nil {
+			// keepassxc-cli prints the password prompt to stderr.
+			var actualErrLines []string
+			for _, line := range strings.Split(errBuf.String(), "\n") {
+				line = strings.TrimSpace(line)
+				if line == "" {
+					continue
+				}
+				if strings.HasSuffix(line, ":") && strings.Contains(line, filepath.Base(c.DatabasePath)) {
+					continue
+				}
+				if line == "No results for that search term." || line == "Entry not found." {
+					continue
+				}
+				actualErrLines = append(actualErrLines, line)
+			}
+
+			actualErrStr := strings.Join(actualErrLines, "\n")
+
+			// Check if the error is an incorrect master password
+			if strings.Contains(actualErrStr, "Invalid credentials") || strings.Contains(actualErrStr, "HMAC mismatch") {
+				fmt.Println("\033[31mError: Invalid KeePassXC master password. Please try again.\033[0m")
+				c.clearMasterPassword()
+				continue
+			}
+
+			if actualErrStr != "" {
+				return outBuf.Bytes(), fmt.Errorf("%w: %s", err, actualErrStr)
+			}
+			return outBuf.Bytes(), err
+		}
+		return outBuf.Bytes(), nil
 	}
-	return outBuf.Bytes(), nil
+}
+
+// clearMasterPassword zeroes and drops the cached master password
+func (c *Client) clearMasterPassword() {
+	for i := range c.masterPassword {
+		c.masterPassword[i] = 0
+	}
+	c.masterPassword = nil
 }
 
 // GeneratePassword creates a secure random password using keepassxc-cli generate.
@@ -235,7 +260,7 @@ func (c *Client) Mkdir(groupPath string) error {
 		}
 		currentPath += part
 
-		out, err := c.runCmd(buildCmd("mkdir", c.DatabasePath, currentPath))
+		out, err := c.runCmd("mkdir", c.DatabasePath, currentPath)
 		if err != nil {
 			return fmt.Errorf("keepassxc-cli mkdir failed for '%s': %s: %s", currentPath, err, out)
 		}
@@ -253,7 +278,7 @@ func (c *Client) GroupExists(path string) bool {
 	path = filepath.ToSlash(filepath.Clean(path))
 
 	// 'ls' exits 0 if the group exists, non-zero otherwise.
-	_, err := c.runCmd(buildCmd("ls", "-q", c.DatabasePath, path))
+	_, err := c.runCmd("ls", "-q", c.DatabasePath, path)
 	return err == nil
 }
 
@@ -263,7 +288,7 @@ func (c *Client) Search(query string) ([]string, error) {
 		return nil, err
 	}
 
-	out, err := c.runCmdQuiet(buildCmd("search", c.DatabasePath, query))
+	out, err := c.runCmdQuiet("search", c.DatabasePath, query)
 	if err != nil {
 		// keepassxc-cli returns exit status 1 when no records are found,
 		// but also when the master password is wrong.
@@ -352,7 +377,7 @@ func (c *Client) DeleteEntry(entryPath string) error {
 		return err
 	}
 
-	out, err := c.runCmd(buildCmd("rm", c.DatabasePath, entryPath))
+	out, err := c.runCmd("rm", c.DatabasePath, entryPath)
 	if err != nil {
 		return fmt.Errorf("keepassxc-cli rm failed: %s: %s", err, out)
 	}
@@ -365,7 +390,7 @@ func (c *Client) UpdateEntryUsername(entryPath, username string) error {
 		return err
 	}
 
-	out, err := c.runCmd(buildCmd("edit", "--username", username, c.DatabasePath, entryPath))
+	out, err := c.runCmd("edit", "--username", username, c.DatabasePath, entryPath)
 	if err != nil {
 		return fmt.Errorf("keepassxc-cli edit failed: %s: %s", err, out)
 	}
@@ -378,7 +403,7 @@ func (c *Client) GetPassword(entryPath string) ([]byte, error) {
 		return nil, err
 	}
 
-	out, err := c.runCmdQuiet(buildCmd("show", "-s", "-a", "password", "-q", c.DatabasePath, entryPath))
+	out, err := c.runCmdQuiet("show", "-s", "-a", "password", "-q", c.DatabasePath, entryPath)
 	if err != nil {
 		if strings.Contains(err.Error(), ": ") {
 			// Actually failed with a real error string
@@ -409,7 +434,7 @@ func (c *Client) GetAttribute(entryPath, attribute string) (string, error) {
 		return "", err
 	}
 
-	out, err := c.runCmdQuiet(buildCmd("show", "-a", attribute, "-q", c.DatabasePath, entryPath))
+	out, err := c.runCmdQuiet("show", "-a", attribute, "-q", c.DatabasePath, entryPath)
 	if err != nil {
 		return "", fmt.Errorf("failed to get attribute '%s': %w", attribute, err)
 	}
