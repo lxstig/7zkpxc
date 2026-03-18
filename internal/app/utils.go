@@ -472,9 +472,33 @@ func resolvePassword(kp PasswordProvider, prefix, archivePath string) (password 
 		return nil, "", false, err
 	}
 
-	chosen, promptErr := promptMultiMatch(mm.Candidates)
-	if promptErr != nil {
-		return nil, "", false, fmt.Errorf("multiple entries for '%s': %w", mm.Basename, promptErr)
+	absPath, absErr := filepath.Abs(archivePath)
+	if absErr != nil {
+		absPath = archivePath
+	}
+	absPath = filepath.ToSlash(absPath)
+
+	var chosen *EntryCandidate
+	var exactMatches int
+
+	// Smart Resolution: check if exactly one candidate matches the absolute path perfectly
+	for _, c := range mm.Candidates {
+		if filepath.ToSlash(c.LastKnownPath) == absPath {
+			cand := c
+			chosen = &cand
+			exactMatches++
+		}
+	}
+
+	// If we couldn't find exactly one perfect match, prompt the user
+	if exactMatches != 1 {
+		c, promptErr := promptMultiMatch(mm.Candidates)
+		if promptErr != nil {
+			return nil, "", false, fmt.Errorf("multiple entries for '%s': %w", mm.Basename, promptErr)
+		}
+		chosen = &c
+	} else {
+		fmt.Printf("Auto-selected matching entry for '%s' based on exact path.\n", archivePath)
 	}
 
 	password, err = kp.GetPassword(chosen.EntryPath)
