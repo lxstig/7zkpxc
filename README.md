@@ -49,7 +49,7 @@ Every archive gets its own unique password. You never see it, never type it, nev
 - **Zero shell leakage** Passwords are piped to 7-Zip via PTY. Nothing in `ps aux`, nothing in history.
 - **Memory safety** Secrets are zeroed in memory immediately after use.
 - **Split volume support** Automatically resolves passwords for split archives (`.7z.001`, `.part001.rar`, etc.).
-- **Transparent file moving** `7zkpxc mv` moves the file on disk and updates the KeePassXC entry instantaneously.
+- **Rename/move support** `7zkpxc mv` moves the file on disk and updates the KeePassXC entry.
 - **Cloud-ready** Encrypt locally, upload anywhere. Only you (with your KeePassXC database) can decrypt.
 - **Dependency checking** Tells you exactly what's missing before doing anything.
 - **Tab-completing init** Interactive setup with real filesystem tab completion.
@@ -223,7 +223,7 @@ export 7ZKPXC_GENERAL_KDBX_PATH="/other/db.kdbx"
 3. Spawns the configured 7-Zip binary (`7zz`, `7z`, etc.) in a PTY and pipes the password when prompted.
 4. Zeroes the password from memory.
 
-**Extracting or listing (`x`, `l`):**
+**Extracting or listing (`x`, `e`, `l`):**
 1. Looks up the password in KeePassXC using a smart fallback chain:
    - Exact path match (fastest)
    - Normalized name for split archives (`archive.7z.001` → `archive.7z`)
