@@ -18,12 +18,22 @@ const DefaultTimeout = 4 * time.Hour
 // Run executes a 7z command with secure password input via PTY.
 // Uses DefaultTimeout. For custom timeouts use RunWithTimeout.
 func Run(binaryPath string, password []byte, args []string) error {
-	return RunWithTimeout(context.Background(), binaryPath, password, args, DefaultTimeout)
+	return runWithTimeoutInternal(context.Background(), binaryPath, password, args, DefaultTimeout, false)
 }
 
 // RunWithTimeout executes a 7z command with a context deadline.
 // The process is forcefully killed if the deadline is exceeded.
 func RunWithTimeout(ctx context.Context, binaryPath string, password []byte, args []string, timeout time.Duration) error {
+	return runWithTimeoutInternal(ctx, binaryPath, password, args, timeout, false)
+}
+
+// VerifyPassword performs a silent test using 7-zip's list command to check header decryption.
+func VerifyPassword(binaryPath string, password []byte, archivePath string) error {
+	args := []string{"l", "-slt", "-ba", archivePath}
+	return runWithTimeoutInternal(context.Background(), binaryPath, password, args, DefaultTimeout, true)
+}
+
+func runWithTimeoutInternal(ctx context.Context, binaryPath string, password []byte, args []string, timeout time.Duration, silent bool) error {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -47,7 +57,7 @@ func RunWithTimeout(ctx context.Context, binaryPath string, password []byte, arg
 	passwordSent := make(chan struct{})
 
 	go bridgeStdin(ctx, ptmx, passwordSent)
-	go processOutput(ptmx, password, passwordSent, done)
+	go processOutput(ptmx, password, passwordSent, silent, done)
 
 	errWait := cmd.Wait()
 	<-done
@@ -104,7 +114,7 @@ func bridgeStdin(ctx context.Context, ptmx *os.File, passwordSent <-chan struct{
 }
 
 // processOutput intercepts password prompts and suppresses token echo.
-func processOutput(ptmx *os.File, password []byte, passwordSent chan<- struct{}, done chan<- error) {
+func processOutput(ptmx *os.File, password []byte, passwordSent chan<- struct{}, silent bool, done chan<- error) {
 	defer close(done)
 
 	buf := make([]byte, 32*1024) // 32 KB — large enough to avoid per-byte reads
@@ -129,7 +139,9 @@ func processOutput(ptmx *os.File, password []byte, passwordSent chan<- struct{},
 			if !suppressUntilNewline && (bytes.Contains(lowerChunk, []byte("enter password")) ||
 				bytes.Contains(lowerChunk, []byte("password:"))) {
 
-				_, _ = os.Stdout.Write(chunk)
+				if !silent {
+					_, _ = os.Stdout.Write(chunk)
+				}
 				_, _ = ptmx.Write(password)
 				_, _ = ptmx.Write([]byte("\n"))
 				suppressUntilNewline = true
@@ -147,14 +159,16 @@ func processOutput(ptmx *os.File, password []byte, passwordSent chan<- struct{},
 				nlIdx := bytes.IndexAny(chunk, "\n\r")
 				if nlIdx != -1 {
 					suppressUntilNewline = false
-					if nlIdx+1 < len(chunk) {
+					if nlIdx+1 < len(chunk) && !silent {
 						_, _ = os.Stdout.Write(chunk[nlIdx+1:])
 					}
 				}
 				continue
 			}
 
-			_, _ = os.Stdout.Write(chunk)
+			if !silent {
+				_, _ = os.Stdout.Write(chunk)
+			}
 		}
 
 		if err != nil {

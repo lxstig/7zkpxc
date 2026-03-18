@@ -49,7 +49,7 @@ Every archive gets its own unique password. You never see it, never type it, nev
 - **Zero shell leakage** Passwords are piped to 7-Zip via PTY. Nothing in `ps aux`, nothing in history.
 - **Memory safety** Secrets are zeroed in memory immediately after use.
 - **Split volume support** Automatically resolves passwords for split archives (`.7z.001`, `.part001.rar`, etc.).
-- **Rename/move support** `7zkpxc rename` moves the file on disk and updates the KeePassXC entry.
+- **Transparent file moving** `7zkpxc mv` moves the file on disk and updates the KeePassXC entry instantaneously.
 - **Cloud-ready** Encrypt locally, upload anywhere. Only you (with your KeePassXC database) can decrypt.
 - **Dependency checking** Tells you exactly what's missing before doing anything.
 - **Tab-completing init** Interactive setup with real filesystem tab completion.
@@ -137,7 +137,7 @@ sudo make purge              # Removes everything including ~/.config/7zkpxc
 7zkpxc mv secrets.7z ~/backup/secrets-2026.7z
 
 # 6. Remove the KeePassXC entry and the local archive when you no longer need them
-7zkpxc rm secrets.7z
+7zkpxc remove secrets.7z
 ```
 
 ## Command Reference
@@ -146,15 +146,15 @@ sudo make purge              # Removes everything including ~/.config/7zkpxc
 |---------|-------------|
 | `7zkpxc init` | Interactive setup wizard (Tab completion for paths) |
 | `7zkpxc a <archive> [files...]` | Create encrypted archive with auto-generated password |
+| `7zkpxc l <archive>` | List archive contents |
 | `7zkpxc x <archive>` | Extract with full paths (password fetched automatically) |
 | `7zkpxc e <archive> [files...]` | Extract flat (without directory names) |
-| `7zkpxc l <archive>` | List archive contents |
-| `7zkpxc t <archive>` | Test archive integrity |
 | `7zkpxc u <archive> [files...]` | Update files in existing archive |
 | `7zkpxc d <archive> [files...]` | Delete specific files from inside an archive |
 | `7zkpxc rn <archive> <old> <new>` | Rename files inside an archive |
-| `7zkpxc rm <archive>` | Delete the KeePassXC entry and the local archive file |
+| `7zkpxc t <archive>` | Test archive integrity |
 | `7zkpxc mv <old> <new>` | Move the archive on disk and update its KeePassXC entry |
+| `7zkpxc remove <archive>` | Delete the KeePassXC entry and the local archive file |
 | `7zkpxc version` | Print version, commit, and build date |
 
 ### Flags
@@ -173,8 +173,11 @@ sudo make purge              # Removes everything including ~/.config/7zkpxc
 # Pass raw 7z flags
 7zkpxc a archive.7z files -- -sfx -m0=lzma2
 
+# Move archive lightning fast (skips silent password verification)
+7zkpxc mv --no-verify archive.7z /dest/
+
 # Delete archive entirely without confirmation
-7zkpxc rm -f archive.7z
+7zkpxc remove -f archive.7z
 
 # Split volumes resolve automatically
 7zkpxc x archive.7z.001

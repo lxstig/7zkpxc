@@ -24,6 +24,7 @@ var mvCmd = &cobra.Command{
 }
 
 func init() {
+	mvCmd.Flags().Bool("no-verify", false, "Skip silent password verification before moving archive (advanced/O(1) mode)")
 	rootCmd.AddCommand(mvCmd)
 }
 
@@ -61,13 +62,11 @@ func runMv(cmd *cobra.Command, args []string) error {
 	}
 
 	return withKeePassArchive(oldArchivePath, true, func(cfg *config.Config, kp *keepass.Client, password []byte, oldKeePassPath string) error {
-		// 4.5 Verify the password is correct BEFORE touching anything on disk.
-		//     This protects against accidental wrong-entry selection in multi-match.
-		//     'sevenzip t' (test) decrypts without extracting; any decryption failure
-		//     means the selected entry's password does not match this archive.
-		fmt.Printf("Verifying password against archive...\n")
-		if err := sevenzip.Run(cfg.SevenZip.BinaryPath, password, []string{"t", absOld}); err != nil {
-			return fmt.Errorf("password verification failed — wrong entry selected or archive is corrupt: %w", err)
+		noVerify, _ := cmd.Flags().GetBool("no-verify")
+		if !noVerify {
+			if err := sevenzip.VerifyPassword(cfg.SevenZip.BinaryPath, password, absOld); err != nil {
+				return fmt.Errorf("silent password verification failed (wrong entry selected or archive corrupt): %w", err)
+			}
 		}
 
 		// 5. Move the file on disk (same-device: rename; cross-device: copy+delete)

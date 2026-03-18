@@ -53,7 +53,7 @@ var commandOrder = map[string]int{
 	"rn":         8,
 	"t":          9,
 	"mv":         10,
-	"rm":         11,
+	"remove":     11,
 	"completion": 12,
 	"version":    13,
 	"help":       14,

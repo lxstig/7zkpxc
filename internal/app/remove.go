@@ -11,21 +11,21 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var rmCmd = &cobra.Command{
-	Use:     "rm <archive_path>",
+var removeCmd = &cobra.Command{
+	Use:     "remove <archive_path>",
 	Short:   "Delete KeePassXC entry and the archive file",
 	Long:    `Removes the password entry stored in KeePassXC for the given archive, and prompts to delete the local archive file.`,
 	Args:    cobra.ExactArgs(1),
-	RunE:    runRm,
+	RunE:    runRemove,
 	GroupID: "actions",
 }
 
 func init() {
-	rmCmd.Flags().BoolP("force", "f", false, "Skip confirmation prompt")
-	rootCmd.AddCommand(rmCmd)
+	removeCmd.Flags().BoolP("force", "f", false, "Skip confirmation prompt")
+	rootCmd.AddCommand(removeCmd)
 }
 
-func runRm(cmd *cobra.Command, args []string) error {
+func runRemove(cmd *cobra.Command, args []string) error {
 	cmd.SilenceUsage = true
 	archivePath := args[0]
 
