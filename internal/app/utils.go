@@ -322,13 +322,13 @@ func (l *passwordLookup) tryPath(entryPath string) ([]byte, string, bool, error)
 	if err == nil {
 		return pass, entryPath, true, nil
 	}
-	// If it's a real KeePassXC error (e.g. wrong master password), abort and return it.
-	// We recognize true errors because cli.go appends the stderr output (containing ": ").
-	if strings.Contains(err.Error(), ": ") {
-		return nil, "", false, err
+	// If the entry simply wasn't found, continue the lookup chain.
+	errStr := err.Error()
+	if strings.Contains(errStr, "Could not find entry") || strings.Contains(errStr, "not found") || !strings.Contains(errStr, ": ") {
+		return nil, "", false, nil
 	}
-	// Otherwise it's just "not found", continue the lookup chain.
-	return nil, "", false, nil
+	// Otherwise it's a real KeePassXC error (e.g. wrong master password, locked DB etc.), abort.
+	return nil, "", false, err
 }
 
 func (l *passwordLookup) searchAndTry(basename string) ([]byte, string, error) {

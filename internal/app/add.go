@@ -19,7 +19,7 @@ var addCmd = &cobra.Command{
 
 If the archive already exists, retrieves its password from KeePassXC and
 appends the provided files without creating a new entry.`,
-	Args:    cobra.MinimumNArgs(2),
+	Args:    cobra.MinimumNArgs(1),
 	RunE:    runAdd,
 	GroupID: "actions",
 }

@@ -16,7 +16,7 @@ var updateCmd = &cobra.Command{
 	Use:     "u <archive_path> [files...]",
 	Short:   "Update files to archive",
 	Long:    `Updates files in an existing encrypted archive. Only newer files are added.`,
-	Args:    cobra.MinimumNArgs(2),
+	Args:    cobra.MinimumNArgs(1),
 	RunE:    runUpdate,
 	GroupID: "actions",
 }

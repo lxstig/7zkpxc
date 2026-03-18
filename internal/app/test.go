@@ -26,8 +26,8 @@ func runTest(cmd *cobra.Command, args []string) error {
 	cmd.SilenceUsage = true
 	archivePath := args[0]
 
-	// readOnly = true -> If anything fails, DO NOT alter the DB or hash
-	return withKeePassArchive(archivePath, true, func(cfg *config.Config, kp *keepass.Client, password []byte, entryPath string) error {
+	// readOnly = false -> Allow it to update the location in KeePassXC on a successful test
+	return withKeePassArchive(archivePath, false, func(cfg *config.Config, kp *keepass.Client, password []byte, entryPath string) error {
 		fmt.Printf("Testing integrity of '%s'...\n", archivePath)
 
 		sevenZipArgs := []string{"t", archivePath}
