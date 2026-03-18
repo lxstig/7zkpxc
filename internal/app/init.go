@@ -11,8 +11,8 @@ import (
 
 	"github.com/chzyer/readline"
 	"github.com/lxstig/7zkpxc/internal/config"
+	"github.com/lxstig/7zkpxc/internal/keepass"
 	"github.com/spf13/cobra"
-	"gopkg.in/yaml.v3"
 )
 
 var errInitCancelled = errors.New("setup cancelled")
@@ -235,6 +235,15 @@ func runInit() error {
 	fmt.Println("========================")
 	fmt.Println()
 
+	if _, err := exec.LookPath("keepassxc-cli"); err != nil {
+		fmt.Println("Warning: 'keepassxc-cli' was not found in your PATH.")
+		fmt.Println("  You must install KeePassXC for 7zkpxc to work:")
+		fmt.Println("    Arch: pacman -S keepassxc")
+		fmt.Println("    Debian/Ubuntu: apt install keepassxc")
+		fmt.Println("    macOS: brew install keepassxc")
+		fmt.Println()
+	}
+
 	// isCancelled handles errInitCancelled uniformly across all prompt steps.
 	// Returns true (and prints "Setup cancelled.") when err is errInitCancelled.
 	isCancelled := func(err error) bool {
@@ -285,9 +294,12 @@ func runInit() error {
 	}
 	cfg.SevenZip.BinaryPath = binary
 
+	// --- Step 5: Test Connection ---
+	testConnectionAndCreateGroup(cfg)
+
 	// --- Save ---
 	if err := saveConfigWithComments(cfg); err != nil {
-		return fmt.Errorf("error saving config: %w", err)
+		return fmt.Errorf("error saving config (check directory permissions): %w", err)
 	}
 
 	fmt.Println()
@@ -297,6 +309,34 @@ func runInit() error {
 	fmt.Printf("  Length  : %d\n", cfg.General.PasswordLength)
 	fmt.Printf("  7z bin  : %s\n", cfg.SevenZip.BinaryPath)
 	return nil
+}
+
+func testConnectionAndCreateGroup(cfg *config.Config) {
+	fmt.Println("\nTesting connection to KeePassXC database...")
+	for {
+		kp := keepass.New(cfg.General.KdbxPath)
+
+		if err := kp.VerifyConnection(); err != nil {
+			kp.Close()
+			fmt.Println("  \033[31mError: Could not unlock database.\033[0m")
+			fmt.Printf("  Reason: %s\n", err.Error())
+			fmt.Println("  Please try again.")
+			continue
+		}
+
+		if !kp.GroupExists(cfg.General.DefaultGroup) {
+			fmt.Printf("  Group '%s' does not exist. Creating it...\n", cfg.General.DefaultGroup)
+			if err := kp.Mkdir(cfg.General.DefaultGroup); err != nil {
+				fmt.Printf("  \033[33mWarning: Failed to create group: %v\033[0m\n", err)
+			} else {
+				fmt.Println("  Success: Database connected and group created.")
+			}
+		} else {
+			fmt.Println("  Success: Database connection OK and group found.")
+		}
+		kp.Close()
+		break
+	}
 }
 
 func promptKdbxPath() (string, error) {
@@ -474,26 +514,6 @@ func expandAndResolve(path string) string {
 	return abs
 }
 
-// injectConfigComments adds human-readable comments to the YAML node tree.
-func injectConfigComments(root *yaml.Node) {
-	if len(root.Content) == 0 || root.Content[0].Kind != yaml.MappingNode {
-		return
-	}
-	mapping := root.Content[0]
-	for i := 0; i < len(mapping.Content); i += 2 {
-		keyNode := mapping.Content[i]
-		valNode := mapping.Content[i+1]
-		if keyNode.Value == "general" && valNode.Kind == yaml.MappingNode {
-			for j := 0; j < len(valNode.Content); j += 2 {
-				genKey := valNode.Content[j]
-				if genKey.Value == "password_length" {
-					genKey.HeadComment = fmt.Sprintf("generated password length (min: %d, max: %d)", config.PasswordLengthMin, config.PasswordLengthMax)
-				}
-			}
-		}
-	}
-}
-
 func saveConfigWithComments(cfg *config.Config) error {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -504,32 +524,32 @@ func saveConfigWithComments(cfg *config.Config) error {
 		return err
 	}
 
-	var root yaml.Node
-	if err := root.Encode(cfg); err != nil {
-		return fmt.Errorf("failed to encode config to yaml: %w", err)
+	configTpl := `general:
+  kdbx_path: "%s"
+  default_group: "%s"
+  use_keyring: %t
+  # generated password length (min: %d, max: %d)
+  password_length: %d
+sevenzip:
+  binary_path: "%s"
+  default_args:
+%s`
+
+	argsStr := ""
+	for _, arg := range cfg.SevenZip.DefaultArgs {
+		argsStr += fmt.Sprintf("    - \"%s\"\n", arg)
 	}
+	argsStr = strings.TrimSuffix(argsStr, "\n")
 
-	injectConfigComments(&root)
+	content := fmt.Sprintf(configTpl,
+		cfg.General.KdbxPath,
+		cfg.General.DefaultGroup,
+		cfg.General.UseKeyring,
+		config.PasswordLengthMin, config.PasswordLengthMax,
+		cfg.General.PasswordLength,
+		cfg.SevenZip.BinaryPath,
+		argsStr,
+	)
 
-	f, err := os.Create(filepath.Join(configDir, "config.yaml"))
-	if err != nil {
-		return err
-	}
-
-	encoder := yaml.NewEncoder(f)
-	encoder.SetIndent(2)
-	encodeErr := encoder.Encode(&root)
-
-	// Close the encoder to flush any buffered data before closing the file.
-	if encCloseErr := encoder.Close(); encCloseErr != nil && encodeErr == nil {
-		encodeErr = encCloseErr
-	}
-
-	if closeErr := f.Close(); closeErr != nil {
-		if encodeErr == nil {
-			return closeErr
-		}
-	}
-
-	return encodeErr
+	return os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(content), 0600)
 }

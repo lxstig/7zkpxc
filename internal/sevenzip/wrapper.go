@@ -3,6 +3,7 @@ package sevenzip
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -67,7 +68,33 @@ func runWithTimeoutInternal(ctx context.Context, binaryPath string, password []b
 		return fmt.Errorf("7z operation timed out after %s", timeout)
 	}
 
+	if errWait != nil {
+		var exitErr *exec.ExitError
+		if errors.As(errWait, &exitErr) {
+			code := exitErr.ExitCode()
+			return fmt.Errorf("7z exited with code %d (%s)", code, sevenZipExitCodeDesc(code))
+		}
+	}
+
 	return errWait
+}
+
+// sevenZipExitCodeDesc returns a human-readable description for 7z exit codes.
+func sevenZipExitCodeDesc(code int) string {
+	switch code {
+	case 1:
+		return "warning: non-fatal error"
+	case 2:
+		return "fatal error"
+	case 7:
+		return "command line error"
+	case 8:
+		return "not enough memory"
+	case 255:
+		return "user stopped the process"
+	default:
+		return "unknown error"
+	}
 }
 
 // bridgeStdin forwards user keystrokes to the PTY after the password has

@@ -268,6 +268,16 @@ func (c *Client) Mkdir(groupPath string) error {
 	return nil
 }
 
+// VerifyConnection runs a simple command against the database root to confirm
+// the master password is correct and the database is accessible.
+func (c *Client) VerifyConnection() error {
+	if err := c.EnsureUnlocked(); err != nil {
+		return err
+	}
+	_, err := c.runCmd("ls", "-q", c.DatabasePath)
+	return err
+}
+
 // GroupExists checks if a group exists.
 // Returns false both when the group is absent and when the check itself fails.
 func (c *Client) GroupExists(path string) bool {
