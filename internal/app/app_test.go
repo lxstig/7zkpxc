@@ -26,8 +26,8 @@ func TestExtractCommand_Exists(t *testing.T) {
 	if extractCmd == nil {
 		t.Fatal("extractCmd is nil")
 	}
-	if extractCmd.Use != "x <archive_path>" {
-		t.Errorf("extractCmd.Use = %q, want %q", extractCmd.Use, "x <archive_path>")
+	if extractCmd.Use != "x <archive_path> [7z_flags...]" {
+		t.Errorf("extractCmd.Use = %q, want %q", extractCmd.Use, "x <archive_path> [7z_flags...]")
 	}
 }
 
@@ -35,8 +35,8 @@ func TestListCommand_Exists(t *testing.T) {
 	if listCmd == nil {
 		t.Fatal("listCmd is nil")
 	}
-	if listCmd.Use != "l <archive_path>" {
-		t.Errorf("listCmd.Use = %q, want %q", listCmd.Use, "l <archive_path>")
+	if listCmd.Use != "l <archive_path> [7z_flags...]" {
+		t.Errorf("listCmd.Use = %q, want %q", listCmd.Use, "l <archive_path> [7z_flags...]")
 	}
 }
 

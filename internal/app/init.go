@@ -474,6 +474,26 @@ func expandAndResolve(path string) string {
 	return abs
 }
 
+// injectConfigComments adds human-readable comments to the YAML node tree.
+func injectConfigComments(root *yaml.Node) {
+	if len(root.Content) == 0 || root.Content[0].Kind != yaml.MappingNode {
+		return
+	}
+	mapping := root.Content[0]
+	for i := 0; i < len(mapping.Content); i += 2 {
+		keyNode := mapping.Content[i]
+		valNode := mapping.Content[i+1]
+		if keyNode.Value == "general" && valNode.Kind == yaml.MappingNode {
+			for j := 0; j < len(valNode.Content); j += 2 {
+				genKey := valNode.Content[j]
+				if genKey.Value == "password_length" {
+					genKey.HeadComment = fmt.Sprintf("generated password length (min: %d, max: %d)", config.PasswordLengthMin, config.PasswordLengthMax)
+				}
+			}
+		}
+	}
+}
+
 func saveConfigWithComments(cfg *config.Config) error {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -484,34 +504,12 @@ func saveConfigWithComments(cfg *config.Config) error {
 		return err
 	}
 
-	// We use yaml.Node to inject comments programmatically
 	var root yaml.Node
-
-	// Encode the struct into the Node tree
-	err = root.Encode(cfg)
-	if err != nil {
+	if err := root.Encode(cfg); err != nil {
 		return fmt.Errorf("failed to encode config to yaml: %w", err)
 	}
 
-	// Add comments. Expected structure: Document -> Mapping -> [Key/Value pairs]
-	// Root is Document (1), Root.Content[0] is Mapping (2).
-	if len(root.Content) > 0 && root.Content[0].Kind == yaml.MappingNode {
-		mapping := root.Content[0]
-
-		for i := 0; i < len(mapping.Content); i += 2 {
-			keyNode := mapping.Content[i]
-			valNode := mapping.Content[i+1]
-
-			if keyNode.Value == "general" && valNode.Kind == yaml.MappingNode {
-				for j := 0; j < len(valNode.Content); j += 2 {
-					genKey := valNode.Content[j]
-					if genKey.Value == "password_length" {
-						genKey.HeadComment = fmt.Sprintf("generated password length (min: %d, max: %d)", config.PasswordLengthMin, config.PasswordLengthMax)
-					}
-				}
-			}
-		}
-	}
+	injectConfigComments(&root)
 
 	f, err := os.Create(filepath.Join(configDir, "config.yaml"))
 	if err != nil {
@@ -522,8 +520,12 @@ func saveConfigWithComments(cfg *config.Config) error {
 	encoder.SetIndent(2)
 	encodeErr := encoder.Encode(&root)
 
+	// Close the encoder to flush any buffered data before closing the file.
+	if encCloseErr := encoder.Close(); encCloseErr != nil && encodeErr == nil {
+		encodeErr = encCloseErr
+	}
+
 	if closeErr := f.Close(); closeErr != nil {
-		// If encoding succeeded but closing failed (e.g., flush error), return the close error.
 		if encodeErr == nil {
 			return closeErr
 		}

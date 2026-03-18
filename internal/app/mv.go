@@ -43,6 +43,11 @@ func runMv(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to resolve new archive path: %w", err)
 	}
 
+	// POSIX mv behavior: if destination is a directory, move into it
+	if info, err := os.Stat(absNew); err == nil && info.IsDir() {
+		absNew = filepath.Join(absNew, filepath.Base(absOld))
+	}
+
 	// 1. Verify the source file actually exists on disk
 	srcInfo, err := os.Stat(absOld)
 	if os.IsNotExist(err) {

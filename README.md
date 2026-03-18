@@ -202,7 +202,9 @@ sevenzip:
 Override any value via environment variables with the `7ZKPXC_` prefix:
 
 ```bash
-export 7ZKPXC_GENERAL_KDBX_PATH="/other/db.kdbx"
+# Most shells don't allow variables starting with a digit (POSIX restriction).
+# Use the `env` command as a workaround:
+env 7ZKPXC_GENERAL_KDBX_PATH="/other/db.kdbx" 7zkpxc a archive.7z files/
 ```
 
 ## How It Works
