@@ -2,7 +2,6 @@ package app
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/lxstig/7zkpxc/internal/config"
 	"github.com/lxstig/7zkpxc/internal/keepass"
@@ -28,18 +27,13 @@ func runList(cmd *cobra.Command, args []string) error {
 	cmd.SilenceUsage = true
 	archivePath := args[0]
 
-	// Collect pass-through 7z flags
-	var extraFlags []string
-	for _, arg := range args[1:] {
-		if strings.HasPrefix(arg, "-") {
-			extraFlags = append(extraFlags, arg)
-		}
-	}
+	// Pass all remaining arguments to 7z
+	extraArgs := args[1:]
 
 	return withKeePassArchive(archivePath, false, func(cfg *config.Config, kp *keepass.Client, password []byte, entryPath string) error {
 		fmt.Printf("Listing '%s'...\n", archivePath)
 		sevenZipArgs := []string{"l", archivePath}
-		sevenZipArgs = append(sevenZipArgs, extraFlags...)
+		sevenZipArgs = append(sevenZipArgs, extraArgs...)
 
 		if runErr := sevenzip.Run(cfg.SevenZip.BinaryPath, password, sevenZipArgs); runErr != nil {
 			return fmt.Errorf("list failed: %w", runErr)
