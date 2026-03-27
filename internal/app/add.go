@@ -146,6 +146,25 @@ func runAddCreate(
 		return fmt.Errorf("archive creation failed: %w", err)
 	}
 
+	// 5. Handle split volumes: when --volume is used, 7z creates .7z.001
+	//    instead of .7z — fix the entry to point to the real file.
+	realArchivePath := absArchivePath
+	splitPath := absArchivePath + ".001"
+	if _, err := os.Stat(splitPath); err == nil {
+		realArchivePath = splitPath
+		newBasename := filepath.Base(realArchivePath)
+		newTitle := makeEntryTitle(newBasename, uuid8)
+		fmt.Printf("Split archive detected — updating entry to '%s'...\n", newBasename)
+		if editErr := kp.EditEntryTitle(keePassEntryPath, newTitle, realArchivePath); editErr != nil {
+			fmt.Printf("Note: could not update entry for split archive: %v\n", editErr)
+		} else {
+			keePassEntryPath = filepath.ToSlash(filepath.Clean(cfg.General.DefaultGroup + "/" + newTitle))
+		}
+	}
+
+	// 6. Set initial metadata (size + version)
+	updateMetadata(kp, keePassEntryPath, realArchivePath)
+
 	return nil
 }
 

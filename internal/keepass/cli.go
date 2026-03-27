@@ -451,3 +451,63 @@ func (c *Client) GetAttribute(entryPath, attribute string) (string, error) {
 
 	return strings.TrimSpace(string(out)), nil
 }
+
+// ListEntries returns the entry names (titles) directly under a group.
+// Sub-groups (lines ending with "/") are excluded from the result.
+func (c *Client) ListEntries(group string) ([]string, error) {
+	if err := c.EnsureUnlocked(); err != nil {
+		return nil, err
+	}
+
+	out, err := c.runCmdQuiet("ls", "-q", "-f", c.DatabasePath, group)
+	if err != nil {
+		return nil, fmt.Errorf("keepassxc-cli ls failed for group '%s': %w", group, err)
+	}
+
+	var entries []string
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		// Sub-groups end with "/", skip them
+		if strings.HasSuffix(line, "/") {
+			continue
+		}
+		// Skip keepassxc-cli info lines
+		if strings.Contains(strings.ToLower(line), "database") {
+			continue
+		}
+		entries = append(entries, line)
+	}
+
+	return entries, nil
+}
+
+// EditEntryTitle atomically updates the title and username of a KeePass entry
+// in a single keepassxc-cli edit call. This is used by orphan recovery to
+// relink a renamed archive to its existing entry.
+func (c *Client) EditEntryTitle(entryPath, newTitle, newUsername string) error {
+	if err := c.EnsureUnlocked(); err != nil {
+		return err
+	}
+
+	out, err := c.runCmd("edit", "--title", newTitle, "--username", newUsername, c.DatabasePath, entryPath)
+	if err != nil {
+		return fmt.Errorf("keepassxc-cli edit failed: %s: %s", err, out)
+	}
+	return nil
+}
+
+// UpdateEntryNotes updates the Notes field of an existing entry.
+func (c *Client) UpdateEntryNotes(entryPath, notes string) error {
+	if err := c.EnsureUnlocked(); err != nil {
+		return err
+	}
+
+	out, err := c.runCmd("edit", "--notes", notes, c.DatabasePath, entryPath)
+	if err != nil {
+		return fmt.Errorf("keepassxc-cli edit --notes failed: %s: %s", err, out)
+	}
+	return nil
+}

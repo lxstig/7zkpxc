@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sync/atomic"
 	"time"
 
 	"github.com/creack/pty"
@@ -19,22 +20,29 @@ const DefaultTimeout = 4 * time.Hour
 // Run executes a 7z command with secure password input via PTY.
 // Uses DefaultTimeout. For custom timeouts use RunWithTimeout.
 func Run(binaryPath string, password []byte, args []string) error {
-	return runWithTimeoutInternal(context.Background(), binaryPath, password, args, DefaultTimeout, false)
+	_, err := runWithTimeoutInternal(context.Background(), binaryPath, password, args, DefaultTimeout, false)
+	return err
 }
 
 // RunWithTimeout executes a 7z command with a context deadline.
 // The process is forcefully killed if the deadline is exceeded.
 func RunWithTimeout(ctx context.Context, binaryPath string, password []byte, args []string, timeout time.Duration) error {
-	return runWithTimeoutInternal(ctx, binaryPath, password, args, timeout, false)
+	_, err := runWithTimeoutInternal(ctx, binaryPath, password, args, timeout, false)
+	return err
 }
 
 // VerifyPassword performs a silent test using 7-zip's list command to check header decryption.
-func VerifyPassword(binaryPath string, password []byte, archivePath string) error {
+// Returns (true, nil) if password is correct, (false, nil) if archive is unencrypted
+// (7z never prompted for a password), or (false, error) if password is wrong / 7z failed.
+func VerifyPassword(binaryPath string, password []byte, archivePath string) (bool, error) {
 	args := []string{"l", "-slt", "-ba", archivePath}
 	return runWithTimeoutInternal(context.Background(), binaryPath, password, args, DefaultTimeout, true)
 }
 
-func runWithTimeoutInternal(ctx context.Context, binaryPath string, password []byte, args []string, timeout time.Duration, silent bool) error {
+// runWithTimeoutInternal returns (passwordWasPrompted, error).
+// passwordWasPrompted is true when 7z actually asked for a password,
+// false when the archive is unencrypted and 7z never prompted.
+func runWithTimeoutInternal(ctx context.Context, binaryPath string, password []byte, args []string, timeout time.Duration, silent bool) (bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -45,7 +53,7 @@ func runWithTimeoutInternal(ctx context.Context, binaryPath string, password []b
 
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer func() { _ = ptmx.Close() }()
 
@@ -57,26 +65,31 @@ func runWithTimeoutInternal(ctx context.Context, binaryPath string, password []b
 	// prompt is handled.
 	passwordSent := make(chan struct{})
 
+	// Track whether 7z actually prompted for a password (atomic for goroutine safety)
+	var prompted atomic.Bool
+
 	go bridgeStdin(ctx, ptmx, passwordSent)
-	go processOutput(ptmx, password, passwordSent, silent, done)
+	go processOutput(ptmx, password, passwordSent, silent, done, &prompted)
 
 	errWait := cmd.Wait()
 	<-done
 
+	wasPrompted := prompted.Load()
+
 	// Distinguish timeout from other errors
 	if ctx.Err() == context.DeadlineExceeded {
-		return fmt.Errorf("7z operation timed out after %s", timeout)
+		return wasPrompted, fmt.Errorf("7z operation timed out after %s", timeout)
 	}
 
 	if errWait != nil {
 		var exitErr *exec.ExitError
 		if errors.As(errWait, &exitErr) {
 			code := exitErr.ExitCode()
-			return fmt.Errorf("7z exited with code %d (%s)", code, sevenZipExitCodeDesc(code))
+			return wasPrompted, fmt.Errorf("7z exited with code %d (%s)", code, sevenZipExitCodeDesc(code))
 		}
 	}
 
-	return errWait
+	return wasPrompted, errWait
 }
 
 // sevenZipExitCodeDesc returns a human-readable description for 7z exit codes.
@@ -141,7 +154,7 @@ func bridgeStdin(ctx context.Context, ptmx *os.File, passwordSent <-chan struct{
 }
 
 // processOutput intercepts password prompts and suppresses token echo.
-func processOutput(ptmx *os.File, password []byte, passwordSent chan<- struct{}, silent bool, done chan<- error) {
+func processOutput(ptmx *os.File, password []byte, passwordSent chan<- struct{}, silent bool, done chan<- error, prompted *atomic.Bool) {
 	defer close(done)
 
 	buf := make([]byte, 32*1024) // 32 KB — large enough to avoid per-byte reads
@@ -176,6 +189,7 @@ func processOutput(ptmx *os.File, password []byte, passwordSent chan<- struct{},
 				// Unblock the stdin bridge on first password send only
 				if !sentPassword {
 					sentPassword = true
+					prompted.Store(true)
 					close(passwordSent)
 				}
 				continue

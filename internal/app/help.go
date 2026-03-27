@@ -54,9 +54,10 @@ var commandOrder = map[string]int{
 	"t":          9,
 	"mv":         10,
 	"remove":     11,
-	"completion": 12,
-	"version":    13,
-	"help":       14,
+	"relink":     12,
+	"completion": 13,
+	"version":    14,
+	"help":       15,
 }
 
 // Helper to sort commands based on priority

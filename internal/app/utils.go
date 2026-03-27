@@ -13,6 +13,7 @@ import (
 
 	"github.com/lxstig/7zkpxc/internal/config"
 	"github.com/lxstig/7zkpxc/internal/keepass"
+	"github.com/lxstig/7zkpxc/internal/sevenzip"
 )
 
 // Regex patterns for detecting split volumes
@@ -559,6 +560,9 @@ type PasswordProvider interface {
 	GetAttribute(entryPath, attribute string) (string, error)
 	Search(query string) ([]string, error)
 	UpdateEntryUsername(entryPath, username string) error
+	UpdateEntryNotes(entryPath, notes string) error
+	ListEntries(group string) ([]string, error)
+	EditEntryTitle(entryPath, newTitle, newUsername string) error
 }
 
 // -------------------------------------------------------------------
@@ -579,6 +583,228 @@ func updatePathIfMoved(kp PasswordProvider, entryPath, absArchivePath string) {
 		return
 	}
 	fmt.Println("(Location updated in KeePassXC.)")
+}
+
+// -------------------------------------------------------------------
+// Orphan Recovery
+//
+// When basename lookup fails (e.g. user manually renamed oldName.7z to
+// newName.7z), this fallback scans the KDBX group for orphaned entries
+// whose last-known file no longer exists on disk. If one is found in
+// the same directory as the target archive, the user is prompted to
+// confirm, the password is verified via sevenzip.VerifyPassword, and
+// the entry is relinked to the new filename.
+//
+// This is intentionally NOT called during the normal lookup path — it
+// only activates on PasswordNotFoundError to keep the hot path O(1).
+// -------------------------------------------------------------------
+
+// OrphanCandidate represents a KeePass entry whose last-known archive
+// file no longer exists on disk.
+type OrphanCandidate struct {
+	EntryPath     string // full KeePass path (group/title)
+	Title         string // entry title, e.g. "backup.7z (a3b2c1d0)"
+	LastKnownPath string // absolute path stored in Username field
+}
+
+// findOrphansInGroup scans entries in the given KDBX group and returns
+// those whose Username (last known path) file does not exist on disk.
+// No directory filter is applied — the entire group is scanned to handle
+// rename+move and post-format scenarios.
+func findOrphansInGroup(kp PasswordProvider, group string) ([]OrphanCandidate, error) {
+	entries, err := kp.ListEntries(group)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list entries in group '%s': %w", group, err)
+	}
+
+	var orphans []OrphanCandidate
+	for _, title := range entries {
+		entryPath := filepath.ToSlash(filepath.Clean(group + "/" + title))
+
+		lastKnown, err := kp.GetAttribute(entryPath, "Username")
+		if err != nil || lastKnown == "" {
+			continue // no path info → can't determine orphan status
+		}
+
+		// Only consider entries whose file is genuinely missing
+		if _, err := os.Stat(lastKnown); err == nil {
+			continue // file still exists, not an orphan
+		}
+
+		orphans = append(orphans, OrphanCandidate{
+			EntryPath:     entryPath,
+			Title:         title,
+			LastKnownPath: lastKnown,
+		})
+	}
+
+	return orphans, nil
+}
+
+// promptOrphanRecovery presents orphan candidates to the user and asks them
+// to select one. Returns the selected candidate.
+// errBruteforceRequested is a sentinel error indicating the user chose brute-force mode.
+var errBruteforceRequested = fmt.Errorf("bruteforce requested")
+
+func promptOrphanRecovery(orphans []OrphanCandidate, absNewPath string) (OrphanCandidate, error) {
+	if len(orphans) == 1 {
+		o := orphans[0]
+		fmt.Fprintf(os.Stderr, "\nFound orphan entry (possible rename?):\n\n")
+		fmt.Fprintf(os.Stderr, "  Entry     : %s\n", o.Title)
+		fmt.Fprintf(os.Stderr, "  Old path  : %s (missing)\n", o.LastKnownPath)
+		fmt.Fprintf(os.Stderr, "  New file  : %s\n\n", absNewPath)
+		fmt.Fprintf(os.Stderr, "Try this entry's password? [y/N]: ")
+
+		scanner := bufio.NewScanner(os.Stdin)
+		if !scanner.Scan() {
+			return OrphanCandidate{}, fmt.Errorf("no input received")
+		}
+		answer := strings.TrimSpace(strings.ToLower(scanner.Text()))
+		if answer != "y" && answer != "yes" {
+			return OrphanCandidate{}, fmt.Errorf("recovery declined by user")
+		}
+		return o, nil
+	}
+
+	// Multiple orphans — let user select
+	fmt.Fprintf(os.Stderr, "\nFound %d orphan entries (possible rename?):\n\n", len(orphans))
+	for i, o := range orphans {
+		fmt.Fprintf(os.Stderr, "  [%d]  %s\n", i+1, o.Title)
+		fmt.Fprintf(os.Stderr, "       Old path: %s (missing)\n\n", o.LastKnownPath)
+	}
+	fmt.Fprintf(os.Stderr, "  New file: %s\n\n", absNewPath)
+	fmt.Fprintf(os.Stderr, "Select entry to try [1-%d] (0 to cancel, B to bruteforce all): ", len(orphans))
+
+	scanner := bufio.NewScanner(os.Stdin)
+	if !scanner.Scan() {
+		return OrphanCandidate{}, fmt.Errorf("no input received")
+	}
+	line := strings.TrimSpace(scanner.Text())
+
+	if strings.EqualFold(line, "b") {
+		return OrphanCandidate{}, errBruteforceRequested
+	}
+
+	var idx int
+	if _, err := fmt.Sscanf(line, "%d", &idx); err != nil || idx < 1 || idx > len(orphans) {
+		return OrphanCandidate{}, fmt.Errorf("recovery cancelled")
+	}
+	return orphans[idx-1], nil
+}
+
+// attemptOrphanRecovery tries to recover a renamed archive by finding orphaned
+// KeePass entries, prompting the user, verifying the password, and relinking.
+// Returns (password, new entry path, error). A non-nil error means recovery failed.
+func attemptOrphanRecovery(kp PasswordProvider, cfg *config.Config, absArchivePath string) ([]byte, string, error) {
+
+	orphans, err := findOrphansInGroup(kp, cfg.General.DefaultGroup)
+	if err != nil {
+		return nil, "", err
+	}
+	if len(orphans) == 0 {
+		return nil, "", fmt.Errorf("no orphan entries found")
+	}
+
+	chosen, err := promptOrphanRecovery(orphans, absArchivePath)
+	if errors.Is(err, errBruteforceRequested) {
+		return bruteforceOrphans(kp, cfg, absArchivePath, orphans)
+	}
+	if err != nil {
+		return nil, "", err
+	}
+
+	return verifyAndRelinkOrphan(kp, cfg, absArchivePath, chosen)
+}
+
+// bruteforceOrphans tries every orphan's password against the archive.
+func bruteforceOrphans(kp PasswordProvider, cfg *config.Config, absArchivePath string, orphans []OrphanCandidate) ([]byte, string, error) {
+	newBasename := filepath.Base(absArchivePath)
+	fmt.Printf("\nBrute-forcing %d orphan passwords against '%s'...\n\n", len(orphans), newBasename)
+
+	for i, o := range orphans {
+		fmt.Printf("  [%d/%d] %s — ", i+1, len(orphans), o.Title)
+
+		password, err := kp.GetPassword(o.EntryPath)
+		if err != nil {
+			fmt.Printf("✗ (could not get password)\n")
+			continue
+		}
+
+		matched, verifyErr := sevenzip.VerifyPassword(cfg.SevenZip.BinaryPath, password, absArchivePath)
+		if verifyErr != nil {
+			for j := range password {
+				password[j] = 0
+			}
+			fmt.Printf("✗\n")
+			continue
+		}
+		if !matched {
+			for j := range password {
+				password[j] = 0
+			}
+			fmt.Printf("✗ (unencrypted)\n")
+			fmt.Printf("\n⚠ Archive '%s' is not encrypted — cannot match.\n", newBasename)
+			return nil, "", fmt.Errorf("archive is not encrypted")
+		}
+
+		// Match found!
+		fmt.Printf("✓ MATCH\n")
+		return relinkOrphanEntry(kp, cfg, absArchivePath, o, password)
+	}
+
+	return nil, "", fmt.Errorf("no matching entry found")
+}
+
+// verifyAndRelinkOrphan verifies a single chosen orphan's password and relinks.
+func verifyAndRelinkOrphan(kp PasswordProvider, cfg *config.Config, absArchivePath string, chosen OrphanCandidate) ([]byte, string, error) {
+	newBasename := filepath.Base(absArchivePath)
+
+	password, err := kp.GetPassword(chosen.EntryPath)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to get password for '%s': %w", chosen.Title, err)
+	}
+
+	fmt.Printf("Verifying password against '%s'...\n", newBasename)
+	matched, verifyErr := sevenzip.VerifyPassword(cfg.SevenZip.BinaryPath, password, absArchivePath)
+	if verifyErr != nil || !matched {
+		for i := range password {
+			password[i] = 0
+		}
+		if verifyErr != nil {
+			return nil, "", fmt.Errorf("password verification failed — this entry does not belong to '%s'", newBasename)
+		}
+		return nil, "", fmt.Errorf("archive '%s' is not encrypted — cannot match to a KeePassXC entry", newBasename)
+	}
+
+	return relinkOrphanEntry(kp, cfg, absArchivePath, chosen, password)
+}
+
+// relinkOrphanEntry relinks the orphan entry to the new archive path. Returns password and new entry path.
+func relinkOrphanEntry(kp PasswordProvider, cfg *config.Config, absArchivePath string, chosen OrphanCandidate, password []byte) ([]byte, string, error) {
+	newBasename := filepath.Base(absArchivePath)
+
+	_, uuid8, ok := parseEntryTitle(chosen.Title)
+	var newTitle string
+	if ok {
+		newTitle = makeEntryTitle(newBasename, uuid8)
+	} else {
+		newUUID, err := generateUniqueUUID8(kp, cfg.General.DefaultGroup, newBasename)
+		if err != nil {
+			fmt.Printf("Note: could not generate UUID for new title: %v\n", err)
+			newTitle = chosen.Title
+		} else {
+			newTitle = makeEntryTitle(newBasename, newUUID)
+		}
+	}
+
+	fmt.Printf("Relinking entry '%s' → '%s'...\n", chosen.Title, newTitle)
+	if err := kp.EditEntryTitle(chosen.EntryPath, newTitle, absArchivePath); err != nil {
+		fmt.Printf("Warning: relink failed (password is valid, entry not updated): %v\n", err)
+	}
+
+	newEntryPath := filepath.ToSlash(filepath.Clean(cfg.General.DefaultGroup + "/" + newTitle))
+	fmt.Println("Recovery successful! Entry relinked.")
+	return password, newEntryPath, nil
 }
 
 // -------------------------------------------------------------------
@@ -612,9 +838,19 @@ func withKeePassArchive(archivePath string, readOnly bool, op ArchiveOp) error {
 	password, entryPath, needsMigration, err := resolvePassword(kp, cfg.General.DefaultGroup, archivePath)
 	if err != nil {
 		if IsPasswordNotFound(err) {
-			return fmt.Errorf("archive '%s' not found in KeePassXC group '%s'", archivePath, cfg.General.DefaultGroup)
+			// Attempt orphan recovery — the archive may have been renamed
+			recPass, recPath, recErr := attemptOrphanRecovery(kp, cfg, absPath)
+			if recErr != nil {
+				fmt.Fprintf(os.Stderr, "\nHint: Try '7zkpxc relink %s' to brute-force match against all entries.\n", archivePath)
+				return fmt.Errorf("archive '%s' not found in KeePassXC group '%s'", archivePath, cfg.General.DefaultGroup)
+			}
+			// Recovery succeeded — use recovered password and entry path
+			password = recPass
+			entryPath = recPath
+			needsMigration = false // recovery already handled relinking
+		} else {
+			return fmt.Errorf("failed to get password: %w", err)
 		}
-		return fmt.Errorf("failed to get password: %w", err)
 	}
 
 	// Defer password zeroing
@@ -626,6 +862,12 @@ func withKeePassArchive(archivePath string, readOnly bool, op ArchiveOp) error {
 
 	// Execute the actual core command logic
 	opErr := op(cfg, kp, password, entryPath)
+
+	// If the operation failed with what looks like a wrong password,
+	// hint about recovery (covers swapped/mislinked entry scenarios)
+	if opErr != nil && strings.Contains(opErr.Error(), "code 2") {
+		fmt.Fprintf(os.Stderr, "\nHint: Wrong password? The entry may be mislinked. Try '7zkpxc relink %s' to fix.\n", archivePath)
+	}
 
 	// Housekeeping (only on success and if not read-only)
 	if opErr == nil && !readOnly {
@@ -643,6 +885,7 @@ func withKeePassArchive(archivePath string, readOnly bool, op ArchiveOp) error {
 			}
 		}
 		updatePathIfMoved(kp, entryPath, absPath)
+		updateMetadata(kp, entryPath, absPath)
 	}
 
 	return opErr

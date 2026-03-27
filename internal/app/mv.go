@@ -69,7 +69,7 @@ func runMv(cmd *cobra.Command, args []string) error {
 	return withKeePassArchive(oldArchivePath, true, func(cfg *config.Config, kp *keepass.Client, password []byte, oldKeePassPath string) error {
 		noVerify, _ := cmd.Flags().GetBool("no-verify")
 		if !noVerify {
-			if err := sevenzip.VerifyPassword(cfg.SevenZip.BinaryPath, password, absOld); err != nil {
+			if _, err := sevenzip.VerifyPassword(cfg.SevenZip.BinaryPath, password, absOld); err != nil {
 				return fmt.Errorf("silent password verification failed (wrong entry selected or archive corrupt): %w", err)
 			}
 		}
@@ -120,6 +120,11 @@ func applyRenameKeePass(
 	if err := kp.DeleteEntry(oldKeePassPath); err != nil {
 		return fmt.Errorf("could not delete old entry '%s' (archive was moved and new entry created successfully, but your database now contains an orphaned duplicate): %w", oldKeePassPath, err)
 	}
+
+	// Set metadata on the new entry
+	newEntryPath := filepath.ToSlash(filepath.Clean(group + "/" + newEntryTitle))
+	updateMetadata(kp, newEntryPath, absNew)
+
 	return nil
 }
 

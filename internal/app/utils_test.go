@@ -3,6 +3,8 @@ package app
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -93,6 +95,78 @@ func (m *MockPasswordProvider) GetCalls() []string {
 	copied := make([]string, len(m.calls))
 	copy(copied, m.calls)
 	return copied
+}
+
+func (m *MockPasswordProvider) ListEntries(group string) ([]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls = append(m.calls, "list-entries:"+group)
+
+	groupPrefix := filepath.ToSlash(filepath.Clean(group))
+	if groupPrefix != "" && !strings.HasSuffix(groupPrefix, "/") {
+		groupPrefix += "/"
+	}
+
+	entriesSet := make(map[string]bool)
+	for k := range m.passwords {
+		kClean := filepath.ToSlash(filepath.Clean(k))
+		if strings.HasPrefix(kClean, groupPrefix) {
+			remainder := strings.TrimPrefix(kClean, groupPrefix)
+			if remainder != "" && !strings.Contains(remainder, "/") {
+				entriesSet[remainder] = true
+			}
+		} else if group == "" {
+			if !strings.Contains(kClean, "/") {
+				entriesSet[kClean] = true
+			}
+		}
+	}
+
+	var results []string
+	for title := range entriesSet {
+		results = append(results, title)
+	}
+	return results, nil
+}
+
+func (m *MockPasswordProvider) UpdateEntryNotes(entryPath, notes string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls = append(m.calls, "update-notes:"+entryPath)
+	if m.attributes[entryPath] == nil {
+		m.attributes[entryPath] = make(map[string]string)
+	}
+	m.attributes[entryPath]["Notes"] = notes
+	return nil
+}
+
+func (m *MockPasswordProvider) EditEntryTitle(entryPath, newTitle, newUsername string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.calls = append(m.calls, "edit-entry:"+entryPath+":"+newTitle+":"+newUsername)
+
+	if pass, ok := m.passwords[entryPath]; ok {
+		dir := filepath.Dir(entryPath)
+		newEntryPath := newTitle
+		if dir != "." && dir != "" && dir != "/" {
+			newEntryPath = filepath.ToSlash(filepath.Join(dir, newTitle))
+		}
+
+		m.passwords[newEntryPath] = pass
+		delete(m.passwords, entryPath)
+
+		if attrs, ok := m.attributes[entryPath]; ok {
+			m.attributes[newEntryPath] = attrs
+			delete(m.attributes, entryPath)
+		} else {
+			m.attributes[newEntryPath] = make(map[string]string)
+		}
+
+		m.attributes[newEntryPath]["Username"] = newUsername
+
+		return nil
+	}
+	return errors.New("entry not found")
 }
 
 // -------------------------------------------------------------------
@@ -734,6 +808,58 @@ func TestIsMultiMatch_WrappedError(t *testing.T) {
 
 	if !IsMultiMatch(wrapped) {
 		t.Error("IsMultiMatch should return true for a wrapped MultiMatchError")
+	}
+}
+
+// -------------------------------------------------------------------
+// Orphan Recovery
+// -------------------------------------------------------------------
+
+func TestFindOrphansInGroup(t *testing.T) {
+	mock := NewMockPasswordProvider()
+
+	// Ensure temp dir exists for our "existing" files
+	tmpDir := t.TempDir()
+	existingFile := filepath.Join(tmpDir, "exists.7z")
+	if err := os.WriteFile(existingFile, []byte("test"), 0644); err != nil {
+		t.Fatalf("failed to create temp file: %v", err)
+	}
+
+	missingFile1 := filepath.Join(tmpDir, "missing", "missing1.7z")
+	missingFile2 := filepath.Join(tmpDir, "other", "missing2.7z")
+
+	// 1. Existing file (not an orphan)
+	addUUIDEntry(mock, "backups", "exists.7z", "11111111", existingFile, []byte("pass1"))
+
+	// 2. Missing file (orphan)
+	addUUIDEntry(mock, "backups", "missing1.7z", "22222222", missingFile1, []byte("pass2"))
+
+	// 3. Missing file in different dir (also orphan — no dir filter)
+	addUUIDEntry(mock, "backups", "missing2.7z", "33333333", missingFile2, []byte("pass3"))
+
+	// 4. Missing path attribute (skipped)
+	mock.SetPassword("backups/nopath.7z (44444444)", []byte("pass4"))
+
+	orphans, err := findOrphansInGroup(mock, "backups")
+	if err != nil {
+		t.Fatalf("findOrphansInGroup failed: %v", err)
+	}
+
+	// Should find both missing entries (no directory filter)
+	if len(orphans) != 2 {
+		t.Fatalf("expected 2 orphans, got %d", len(orphans))
+	}
+
+	// Verify orphan titles (order may vary due to map iteration)
+	titles := make(map[string]bool)
+	for _, o := range orphans {
+		titles[o.Title] = true
+	}
+	if !titles["missing1.7z (22222222)"] {
+		t.Error("missing1.7z (22222222) not found in orphans")
+	}
+	if !titles["missing2.7z (33333333)"] {
+		t.Error("missing2.7z (33333333) not found in orphans")
 	}
 }
 
