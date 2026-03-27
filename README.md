@@ -48,8 +48,10 @@ Every archive gets its own unique password. You never see it, never type it, nev
 - **KeePassXC as your vault** Passwords are stored and retrieved from your `.kdbx` database automatically.
 - **Zero shell leakage** Passwords are piped to 7-Zip via PTY. Nothing in `ps aux`, nothing in history.
 - **Memory safety** Secrets are zeroed in memory immediately after use.
+- **Metadata-driven relinking** File-size fingerprints stored in KeePass Notes enable fast recovery of renamed/moved archives.
 - **Split volume support** Automatically resolves passwords for split archives (`.7z.001`, `.part001.rar`, etc.).
 - **Rename/move support** `7zkpxc mv` moves the file on disk and updates the KeePassXC entry.
+- **Relink command** `7zkpxc relink` finds the correct entry for an archive by brute-forcing passwords with size pre-filtering.
 - **Cloud-ready** Encrypt locally, upload anywhere. Only you (with your KeePassXC database) can decrypt.
 - **Dependency checking** Tells you exactly what's missing before doing anything.
 - **Tab-completing init** Interactive setup with real filesystem tab completion.
@@ -136,7 +138,11 @@ sudo make purge              # Removes everything including ~/.config/7zkpxc
 # 5. Rename or move an archive (updates the file AND the KeePassXC entry)
 7zkpxc mv secrets.7z ~/backup/secrets-2026.7z
 
-# 6. Remove the KeePassXC entry and the local archive when you no longer need them
+# 6. Relink after manual rename or OS reinstall
+7zkpxc relink secrets-2026.7z    # single archive
+7zkpxc relink ~/backup/          # all archives in a directory
+
+# 7. Remove the KeePassXC entry and the local archive when you no longer need them
 7zkpxc remove secrets.7z
 ```
 
@@ -155,6 +161,7 @@ sudo make purge              # Removes everything including ~/.config/7zkpxc
 | `7zkpxc t <archive>` | Test archive integrity |
 | `7zkpxc mv <old> <new>` | Move the archive on disk and update its KeePassXC entry |
 | `7zkpxc remove <archive>` | Delete the KeePassXC entry and the local archive file |
+| `7zkpxc relink <archive\|dir>` | Relink archives to their KeePassXC entries (brute-force with size filter) |
 | `7zkpxc version` | Print version, commit, and build date |
 
 ### Flags
@@ -238,6 +245,14 @@ env 7ZKPXC_GENERAL_KDBX_PATH="/other/db.kdbx" 7zkpxc a archive.7z files/
 3. Creates a new KeePassXC entry for the new path.
 4. Deletes the old entry.
 5. If step 3 fails, the file move is automatically rolled back.
+
+**Relinking (`relink`):**
+1. Collects all entries from the KeePassXC group with their stored metadata.
+2. Partitions entries by file size: exact matches → no metadata → size mismatches.
+3. Tests each entry's password against the archive using `VerifyPassword` (phases run in order).
+4. On match, atomically updates the entry title and path.
+
+> **Note:** Every successful archive operation automatically stores a `[7zkpxc]` metadata section in the KeePass entry's Notes field (file size + version). This enables the size pre-filter in `relink`, reducing password verification attempts from O(entries) to O(1) in the common case.
 
 ## Credits
 
