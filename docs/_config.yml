@@ -1,0 +1,28 @@
+title: "7zkpxc"
+description: "Secure 7-Zip wrapper with KeePassXC integration — unique passwords per archive, zero shell leakage"
+url: "https://lxstig.github.io"
+baseurl: "/7zkpxc"
+remote_theme: pages-themes/midnight@v0.2.0
+
+plugins:
+  - jekyll-remote-theme
+  - jekyll-seo-tag
+  - jekyll-sitemap
+
+author:
+  name: "lxstig"
+  url: "https://github.com/lxstig"
+
+social:
+  name: "7zkpxc"
+  links:
+    - "https://github.com/lxstig/7zkpxc"
+    - "https://aur.archlinux.org/packages/7zkpxc"
+
+google_analytics:
+
+defaults:
+  - scope:
+      path: ""
+    values:
+      layout: "default"
