@@ -814,6 +814,17 @@ func relinkOrphanEntry(kp PasswordProvider, cfg *config.Config, absArchivePath s
 // ArchiveOp is the function signature for operations that run inside withKeePassArchive.
 type ArchiveOp func(cfg *config.Config, kp *keepass.Client, password []byte, entryPath string) error
 
+// ensureArchiveExists performs a pre-flight check to verify the archive file
+// (or its first split volume) exists on disk before we prompt for KeePassXC.
+func ensureArchiveExists(absPath string) error {
+	if _, err := os.Stat(absPath); err != nil && os.IsNotExist(err) {
+		if _, errSplit := os.Stat(absPath + ".001"); errSplit != nil && os.IsNotExist(errSplit) {
+			return fmt.Errorf("cannot access '%s': no such file or directory", filepath.Base(absPath))
+		}
+	}
+	return nil
+}
+
 // withKeePassArchive is a cross-cutting abstraction that removes the 50 lines
 // of boilerplate repeated in every archive action command (add/extract/list/delete).
 // It loads the config, opens the KeePass DB, resolves the password (with interactive fallback),
@@ -829,6 +840,10 @@ func withKeePassArchive(archivePath string, readOnly bool, op ArchiveOp) error {
 	absPath, err := filepath.Abs(archivePath)
 	if err != nil {
 		absPath = archivePath
+	}
+
+	if err := ensureArchiveExists(absPath); err != nil {
+		return err
 	}
 
 	kp := keepass.New(cfg.General.KdbxPath)
@@ -871,24 +886,28 @@ func withKeePassArchive(archivePath string, readOnly bool, op ArchiveOp) error {
 
 	// Housekeeping (only on success and if not read-only)
 	if opErr == nil && !readOnly {
-		if needsMigration {
-			lastKnownPath := entryPath
-			if lk, e := kp.GetAttribute(entryPath, "Username"); e == nil && lk != "" {
-				lastKnownPath = lk
-			}
-			newPath, migrateErr := migrateEntry(kp, cfg.General.DefaultGroup, entryPath, password, lastKnownPath)
-			if migrateErr != nil {
-				fmt.Printf("Note: could not migrate entry to new format: %v\n", migrateErr)
-			} else {
-				fmt.Println("(Entry migrated to new format.)")
-				entryPath = newPath
-			}
-		}
-		updatePathIfMoved(kp, entryPath, absPath)
-		updateMetadata(kp, entryPath, absPath)
+		performHousekeeping(cfg, kp, entryPath, absPath, password, needsMigration)
 	}
 
 	return opErr
+}
+
+func performHousekeeping(cfg *config.Config, kp PasswordProvider, entryPath, absPath string, password []byte, needsMigration bool) {
+	if needsMigration {
+		lastKnownPath := entryPath
+		if lk, e := kp.GetAttribute(entryPath, "Username"); e == nil && lk != "" {
+			lastKnownPath = lk
+		}
+		newPath, migrateErr := migrateEntry(kp.(EntryMigrator), cfg.General.DefaultGroup, entryPath, password, lastKnownPath)
+		if migrateErr != nil {
+			fmt.Printf("Note: could not migrate entry to new format: %v\n", migrateErr)
+		} else {
+			fmt.Println("(Entry migrated to new format.)")
+			entryPath = newPath
+		}
+	}
+	updatePathIfMoved(kp, entryPath, absPath)
+	updateMetadata(kp, entryPath, absPath)
 }
 
 // -------------------------------------------------------------------
