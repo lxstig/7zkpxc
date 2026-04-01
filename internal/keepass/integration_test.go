@@ -40,6 +40,7 @@ func TestGetPassword_WithFakeCLI(t *testing.T) {
 	client := &Client{
 		DatabasePath:   "/fake/db.kdbx",
 		masterPassword: []byte("testmasterpassword"),
+		passwordSet:    true,
 	}
 	defer client.Close()
 
@@ -105,6 +106,7 @@ func TestAddEntry_PasswordNotInArgs(t *testing.T) {
 	client := &Client{
 		DatabasePath:   "/fake/db.kdbx",
 		masterPassword: []byte("masterpass"),
+		passwordSet:    true,
 	}
 	defer client.Close()
 

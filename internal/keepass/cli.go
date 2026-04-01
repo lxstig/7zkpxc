@@ -16,6 +16,7 @@ import (
 type Client struct {
 	DatabasePath   string
 	masterPassword []byte // zeroed on Close()
+	passwordSet    bool
 }
 
 func New(dbPath string) *Client {
@@ -43,6 +44,7 @@ func (c *Client) Close() {
 		c.masterPassword[i] = 0
 	}
 	c.masterPassword = nil
+	c.passwordSet = false
 }
 
 // getMasterPassword returns the master password.
@@ -157,6 +159,7 @@ func (c *Client) clearMasterPassword() {
 		c.masterPassword[i] = 0
 	}
 	c.masterPassword = nil
+	c.passwordSet = false
 }
 
 // GeneratePassword creates a secure random password using keepassxc-cli generate.
@@ -196,7 +199,7 @@ func (c *Client) GeneratePassword(length int) ([]byte, error) {
 
 // EnsureUnlocked prompts for master password if not set
 func (c *Client) EnsureUnlocked() error {
-	if len(c.masterPassword) > 0 {
+	if c.passwordSet {
 		return nil
 	}
 
@@ -209,6 +212,7 @@ func (c *Client) EnsureUnlocked() error {
 	}
 	fmt.Println()                   // Newline
 	c.masterPassword = bytePassword // Already []byte, no conversion needed
+	c.passwordSet = true
 	return nil
 }
 

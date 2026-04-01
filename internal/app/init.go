@@ -318,9 +318,7 @@ func testConnectionAndCreateGroup(cfg *config.Config) {
 
 		if err := kp.VerifyConnection(); err != nil {
 			kp.Close()
-			fmt.Println("  \033[31mError: Could not unlock database.\033[0m")
-			fmt.Printf("  Reason: %s\n", err.Error())
-			fmt.Println("  Please try again.")
+			fmt.Println("  \033[31mError: Could not unlock database, please try again.\033[0m")
 			continue
 		}
 
