@@ -70,6 +70,22 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Pre-flight check: ensure input files exist before expensive KeePassXC/7z operations.
+	// This prevents generating passwords and leaving "zombie" .7z files on disk
+	// if the user accidentally mistypes a filename (e.g. sysinfo.sf instead of .sh).
+	for _, file := range files {
+		// If the shell passed an unexpanded wildcard (e.g. "*.txt"), defer to 7z.
+		if strings.ContainsAny(file, "*?") {
+			continue
+		}
+		if _, err := os.Stat(file); err != nil {
+			if os.IsNotExist(err) {
+				return fmt.Errorf("cannot add '%s': no such file or directory", file)
+			}
+			return fmt.Errorf("cannot access '%s': %w", file, err)
+		}
+	}
+
 	// Dispatch based on whether the archive already exists
 	if _, err := os.Stat(archiveName); err == nil {
 		return runAddUpdate(cmd, archiveName, files, extraFlags)

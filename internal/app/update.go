@@ -50,6 +50,21 @@ func runUpdate(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Pre-flight check: ensure input files exist before prompting for KeePassXC password.
+	// This prevents frustrating UX where the user unlocks their KDBX vault only to find
+	// out they mistyped a filename.
+	for _, file := range files {
+		if strings.ContainsAny(file, "*?") {
+			continue
+		}
+		if _, err := os.Stat(file); err != nil {
+			if os.IsNotExist(err) {
+				return fmt.Errorf("cannot update '%s': no such file or directory", file)
+			}
+			return fmt.Errorf("cannot access '%s': %w", file, err)
+		}
+	}
+
 	return withKeePassArchive(archiveName, false, func(cfg *config.Config, kp *keepass.Client, password []byte, entryPath string) error {
 		fmt.Printf("Updating archive '%s'...\n", archiveName)
 		sevenZipArgs := []string{"u"}
