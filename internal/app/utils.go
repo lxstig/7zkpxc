@@ -730,15 +730,15 @@ func bruteforceOrphans(kp PasswordProvider, cfg *config.Config, absArchivePath s
 			continue
 		}
 
-		matched, verifyErr := sevenzip.VerifyPassword(cfg.SevenZip.BinaryPath, password, absArchivePath)
-		if verifyErr != nil {
+		match, _ := sevenzip.VerifyPassword(cfg.SevenZip.BinaryPath, password, absArchivePath)
+		if match == sevenzip.MatchFailed {
 			for j := range password {
 				password[j] = 0
 			}
 			fmt.Printf("✗\n")
 			continue
 		}
-		if !matched {
+		if match == sevenzip.MatchUnencrypted {
 			for j := range password {
 				password[j] = 0
 			}
@@ -765,17 +765,18 @@ func verifyAndRelinkOrphan(kp PasswordProvider, cfg *config.Config, absArchivePa
 	}
 
 	fmt.Printf("Verifying password against '%s'...\n", newBasename)
-	matched, verifyErr := sevenzip.VerifyPassword(cfg.SevenZip.BinaryPath, password, absArchivePath)
-	if verifyErr != nil || !matched {
+	match, verifyErr := sevenzip.VerifyPassword(cfg.SevenZip.BinaryPath, password, absArchivePath)
+	if match != sevenzip.MatchCorrect {
 		for i := range password {
 			password[i] = 0
 		}
-		if verifyErr != nil {
-			return nil, "", fmt.Errorf("password verification failed — this entry does not belong to '%s'", newBasename)
+		if match == sevenzip.MatchFailed {
+			return nil, "", fmt.Errorf("password verification failed — this entry does not belong to '%s' (or could not run 7z: %v)", newBasename, verifyErr)
 		}
-		return nil, "", fmt.Errorf("archive '%s' is not encrypted — cannot match to a KeePassXC entry", newBasename)
+		return nil, "", fmt.Errorf("archive '%s' is unencrypted — cannot use KeePassXC entry", newBasename)
 	}
 
+	fmt.Printf("✓ Success\n")
 	return relinkOrphanEntry(kp, cfg, absArchivePath, chosen, password)
 }
 
@@ -875,6 +876,15 @@ func withKeePassArchive(archivePath string, readOnly bool, op ArchiveOp) error {
 		}
 	}()
 
+	// Detect if this is an unencrypted archive before running the operation
+	var isUnencrypted bool
+	if !readOnly {
+		match, _ := sevenzip.VerifyPassword(cfg.SevenZip.BinaryPath, password, absPath)
+		if match == sevenzip.MatchUnencrypted {
+			isUnencrypted = true
+		}
+	}
+
 	// Execute the actual core command logic
 	opErr := op(cfg, kp, password, entryPath)
 
@@ -886,7 +896,11 @@ func withKeePassArchive(archivePath string, readOnly bool, op ArchiveOp) error {
 
 	// Housekeeping (only on success and if not read-only)
 	if opErr == nil && !readOnly {
-		performHousekeeping(cfg, kp, entryPath, absPath, password, needsMigration)
+		if isUnencrypted {
+			fmt.Printf("\n[i] Note: Archive '%s' is not encrypted. KeePassXC entry was NOT updated to prevent metadata mix-ups.\n", filepath.Base(absPath))
+		} else {
+			performHousekeeping(cfg, kp, entryPath, absPath, password, needsMigration)
+		}
 	}
 
 	return opErr

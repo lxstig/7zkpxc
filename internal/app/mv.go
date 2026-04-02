@@ -69,8 +69,12 @@ func runMv(cmd *cobra.Command, args []string) error {
 	return withKeePassArchive(oldArchivePath, true, func(cfg *config.Config, kp *keepass.Client, password []byte, oldKeePassPath string) error {
 		noVerify, _ := cmd.Flags().GetBool("no-verify")
 		if !noVerify {
-			if _, err := sevenzip.VerifyPassword(cfg.SevenZip.BinaryPath, password, absOld); err != nil {
-				return fmt.Errorf("silent password verification failed (wrong entry selected or archive corrupt): %w", err)
+			match, err := sevenzip.VerifyPassword(cfg.SevenZip.BinaryPath, password, absOld)
+			if match != sevenzip.MatchCorrect {
+				if match == sevenzip.MatchFailed {
+					return fmt.Errorf("silent password verification failed (wrong entry selected or archive corrupt): %w", err)
+				}
+				return fmt.Errorf("archive is unencrypted, silent password verification failed")
 			}
 		}
 

@@ -31,12 +31,26 @@ func RunWithTimeout(ctx context.Context, binaryPath string, password []byte, arg
 	return err
 }
 
+// PasswordMatch indicates the result of verifying an archive password.
+type PasswordMatch int
+
+const (
+	MatchCorrect     PasswordMatch = iota // Password was correct and data decrypted.
+	MatchUnencrypted                      // Archive did not require a password.
+	MatchFailed                           // Wrong password or other runtime error.
+)
+
 // VerifyPassword performs a silent test using 7-zip's list command to check header decryption.
-// Returns (true, nil) if password is correct, (false, nil) if archive is unencrypted
-// (7z never prompted for a password), or (false, error) if password is wrong / 7z failed.
-func VerifyPassword(binaryPath string, password []byte, archivePath string) (bool, error) {
+func VerifyPassword(binaryPath string, password []byte, archivePath string) (PasswordMatch, error) {
 	args := []string{"l", "-slt", "-ba", archivePath}
-	return runWithTimeoutInternal(context.Background(), binaryPath, password, args, DefaultTimeout, true)
+	prompted, err := runWithTimeoutInternal(context.Background(), binaryPath, password, args, DefaultTimeout, true)
+	if err == nil {
+		if prompted {
+			return MatchCorrect, nil
+		}
+		return MatchUnencrypted, nil
+	}
+	return MatchFailed, err
 }
 
 // runWithTimeoutInternal returns (passwordWasPrompted, error).

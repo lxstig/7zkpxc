@@ -183,16 +183,16 @@ func tryVerifyEntries(kp *keepass.Client, cfg *config.Config, absArchivePath str
 			continue
 		}
 
-		matched, verifyErr := sevenzip.VerifyPassword(cfg.SevenZip.BinaryPath, password, absArchivePath)
+		match, _ := sevenzip.VerifyPassword(cfg.SevenZip.BinaryPath, password, absArchivePath)
 		for j := range password {
 			password[j] = 0
 		}
 
-		if verifyErr != nil {
+		if match == sevenzip.MatchFailed {
 			fmt.Printf("✗\n")
 			continue
 		}
-		if !matched {
+		if match == sevenzip.MatchUnencrypted {
 			fmt.Printf("✗ (unencrypted archive)\n")
 			fmt.Printf("\n⚠ Archive '%s' is not encrypted — cannot match to a KeePassXC entry.\n", basename)
 			return &e // signal to stop
@@ -290,15 +290,15 @@ func verifyAndRelink(kp *keepass.Client, cfg *config.Config, archivePath string,
 			continue
 		}
 
-		matched, verifyErr := sevenzip.VerifyPassword(cfg.SevenZip.BinaryPath, password, archivePath)
+		match, _ := sevenzip.VerifyPassword(cfg.SevenZip.BinaryPath, password, archivePath)
 		for j := range password {
 			password[j] = 0
 		}
 
-		if verifyErr != nil {
+		if match == sevenzip.MatchFailed {
 			continue
 		}
-		if !matched {
+		if match == sevenzip.MatchUnencrypted {
 			fmt.Printf("  ⚠ Unencrypted archive — skipped\n\n")
 			return relinkResult{basename, "unencrypted", ""}, allEntries, true
 		}
