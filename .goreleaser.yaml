@@ -6,7 +6,7 @@ project_name: 7zkpxc
 before:
   hooks:
     - go mod tidy
-    - go test ./...
+    - env QT_QPA_PLATFORM=offscreen go test ./...
     - mkdir -p completions
     - go build -o /tmp/7zkpxc-completion-gen ./cmd/7zkpxc
     - sh -c "/tmp/7zkpxc-completion-gen completion zsh > completions/_7zkpxc"
