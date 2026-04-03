@@ -12,10 +12,11 @@ import (
 
 // MockPasswordProvider for testing
 type MockPasswordProvider struct {
-	mu         sync.Mutex
-	passwords  map[string][]byte
-	attributes map[string]map[string]string // entryPath -> attribute -> value
-	calls      []string
+	mu          sync.Mutex
+	passwords   map[string][]byte
+	attributes  map[string]map[string]string // entryPath -> attribute -> value
+	calls       []string
+	searchError error
 }
 
 func NewMockPasswordProvider() *MockPasswordProvider {
@@ -67,6 +68,11 @@ func (m *MockPasswordProvider) Search(query string) ([]string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.calls = append(m.calls, "search:"+query)
+
+	if m.searchError != nil {
+		return nil, m.searchError
+	}
+
 	var results []string
 	for k := range m.passwords {
 		// simple substring match to emulate keepassxc search
@@ -75,6 +81,12 @@ func (m *MockPasswordProvider) Search(query string) ([]string, error) {
 		}
 	}
 	return results, nil
+}
+
+func (m *MockPasswordProvider) SetSearchError(err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.searchError = err
 }
 
 func (m *MockPasswordProvider) UpdateEntryUsername(entryPath, username string) error {
@@ -1320,5 +1332,589 @@ func TestMigrateEntry_EmptyPrefix(t *testing.T) {
 		if !ok {
 			t.Errorf("new path %q should be UUID format without prefix", newPath)
 		}
+	}
+}
+
+// -------------------------------------------------------------------
+// ensureArchiveExists
+// -------------------------------------------------------------------
+
+func TestEnsureArchiveExists_FileExists(t *testing.T) {
+	tmpDir := t.TempDir()
+	archiveFile := filepath.Join(tmpDir, "test.7z")
+	if err := os.WriteFile(archiveFile, []byte("fake archive"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := ensureArchiveExists(archiveFile)
+	if err != nil {
+		t.Errorf("expected no error for existing file, got: %v", err)
+	}
+}
+
+func TestEnsureArchiveExists_FileNotExists(t *testing.T) {
+	tmpDir := t.TempDir()
+	archiveFile := filepath.Join(tmpDir, "nonexistent.7z")
+
+	err := ensureArchiveExists(archiveFile)
+	if err == nil {
+		t.Error("expected error for nonexistent file")
+	}
+	if !strings.Contains(err.Error(), "no such file or directory") {
+		t.Errorf("expected 'no such file' message, got: %v", err)
+	}
+}
+
+func TestEnsureArchiveExists_SplitVolumeExists(t *testing.T) {
+	tmpDir := t.TempDir()
+	// .7z doesn't exist but .7z.001 does
+	archiveFile := filepath.Join(tmpDir, "split.7z")
+	splitFile := archiveFile + ".001"
+	if err := os.WriteFile(splitFile, []byte("split volume"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := ensureArchiveExists(archiveFile)
+	if err != nil {
+		t.Errorf("expected no error when .001 split volume exists, got: %v", err)
+	}
+}
+
+func TestEnsureArchiveExists_NeitherExists(t *testing.T) {
+	tmpDir := t.TempDir()
+	archiveFile := filepath.Join(tmpDir, "ghost.7z")
+
+	err := ensureArchiveExists(archiveFile)
+	if err == nil {
+		t.Error("expected error when neither .7z nor .7z.001 exists")
+	}
+}
+
+// -------------------------------------------------------------------
+// searchAndTry
+// -------------------------------------------------------------------
+
+func TestSearchAndTry_NoResults(t *testing.T) {
+	mock := NewMockPasswordProvider()
+	l := &passwordLookup{kp: mock, prefix: "backups"}
+
+	pass, entryPath, err := l.searchAndTry("nonexistent.7z")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if pass != nil {
+		t.Error("expected nil password for no results")
+	}
+	if entryPath != "" {
+		t.Error("expected empty entry path for no results")
+	}
+}
+
+func TestSearchAndTry_SingleResult(t *testing.T) {
+	mock := NewMockPasswordProvider()
+	addUUIDEntry(mock, "backups", "archive.7z", "deadbeef", "/home/archive.7z", []byte("pw"))
+	l := &passwordLookup{kp: mock, prefix: "backups"}
+
+	pass, entryPath, err := l.searchAndTry("archive.7z")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(pass) != "pw" {
+		t.Errorf("pass = %q, want %q", pass, "pw")
+	}
+	if entryPath != "backups/archive.7z (deadbeef)" {
+		t.Errorf("entryPath = %q", entryPath)
+	}
+}
+
+func TestSearchAndTry_MultiResult(t *testing.T) {
+	mock := NewMockPasswordProvider()
+	addUUIDEntry(mock, "backups", "archive.7z", "aaaaaaaa", "/a/archive.7z", []byte("pw1"))
+	addUUIDEntry(mock, "backups", "archive.7z", "bbbbbbbb", "/b/archive.7z", []byte("pw2"))
+	l := &passwordLookup{kp: mock, prefix: "backups"}
+
+	_, _, err := l.searchAndTry("archive.7z")
+	if err == nil {
+		t.Fatal("expected MultiMatchError, got nil")
+	}
+	if !IsMultiMatch(err) {
+		t.Errorf("expected MultiMatchError, got %T: %v", err, err)
+	}
+}
+
+// -------------------------------------------------------------------
+// encodeArchivePath
+// -------------------------------------------------------------------
+
+func TestEncodeArchivePath(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"/home/user/archive.7z", "%2Fhome%2Fuser%2Farchive.7z"},
+		{"/tmp/test.zip", "%2Ftmp%2Ftest.zip"},
+		{"simple.7z", "simple.7z"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := encodeArchivePath(tt.input)
+			if got != tt.want {
+				t.Errorf("encodeArchivePath(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+// -------------------------------------------------------------------
+// AnalyzeArchive — extended edge cases
+// -------------------------------------------------------------------
+
+func TestAnalyzeArchive_ExtendedEdgeCases(t *testing.T) {
+	tests := []struct {
+		name      string
+		input     string
+		wantSplit bool
+		wantNorm  string
+	}{
+		{"4-digit split", "file.7z.0001", true, "file.7z"},
+		{"RAR uppercase old", "FILE.R01", true, "FILE.RAR"},
+		{"RAR mixed case part", "Backup.Part001.Rar", true, "Backup.Rar"},
+		{"Not a split - too short", "file.7z.01", false, "file.7z.01"},
+		{"Tar.gz split", "data.tar.gz.001", true, "data.tar.gz"},
+		{"Just a number extension", "backup.2024", false, "backup.2024"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			info := AnalyzeArchive(tt.input)
+			if info.IsSplit != tt.wantSplit {
+				t.Errorf("IsSplit = %v, want %v", info.IsSplit, tt.wantSplit)
+			}
+			got := normalizeArchiveName(tt.input)
+			if got != tt.wantNorm {
+				t.Errorf("normalizeArchiveName(%q) = %q, want %q", tt.input, got, tt.wantNorm)
+			}
+		})
+	}
+}
+
+// -------------------------------------------------------------------
+// tryPath — real KeePassXC error branch (87.5% → 100%)
+// -------------------------------------------------------------------
+
+// ErrorPasswordProvider wraps MockPasswordProvider but returns a real error
+// (containing ": ") for specific paths to simulate KeePassXC failures.
+type ErrorPasswordProvider struct {
+	*MockPasswordProvider
+	errorPaths map[string]string // path → error message
+}
+
+func (e *ErrorPasswordProvider) GetPassword(key string) ([]byte, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.calls = append(e.calls, key)
+	if msg, ok := e.errorPaths[key]; ok {
+		return nil, fmt.Errorf("keepassxc error: %s", msg)
+	}
+	if pass, ok := e.passwords[key]; ok {
+		return pass, nil
+	}
+	return nil, errors.New("not found")
+}
+
+func TestTryPath_RealKeePassError(t *testing.T) {
+	baseMock := NewMockPasswordProvider()
+	mock := &ErrorPasswordProvider{
+		MockPasswordProvider: baseMock,
+		errorPaths: map[string]string{
+			"backups/broken.7z": "database locked by another process",
+		},
+	}
+	l := &passwordLookup{kp: mock, prefix: "backups"}
+
+	_, _, ok, err := l.tryPath("backups/broken.7z")
+	if ok {
+		t.Error("expected ok=false for real KeePassXC error")
+	}
+	if err == nil {
+		t.Fatal("expected non-nil error for real KeePassXC error")
+	}
+	if !strings.Contains(err.Error(), "database locked") {
+		t.Errorf("expected error containing 'database locked', got: %v", err)
+	}
+}
+
+// -------------------------------------------------------------------
+// searchAndTry — single result with tryPath error (63.6% → ~80%)
+// -------------------------------------------------------------------
+
+func TestSearchAndTry_SingleResult_ErrorFromTryPath(t *testing.T) {
+	baseMock := NewMockPasswordProvider()
+	addUUIDEntry(baseMock, "backups", "archive.7z", "deadbeef", "/home/archive.7z", []byte("pw"))
+
+	mock := &ErrorPasswordProvider{
+		MockPasswordProvider: baseMock,
+		errorPaths: map[string]string{
+			"backups/archive.7z (deadbeef)": "HMAC mismatch",
+		},
+	}
+	l := &passwordLookup{kp: mock, prefix: "backups"}
+
+	_, _, err := l.searchAndTry("archive.7z")
+	if err == nil {
+		t.Fatal("expected error when tryPath returns real KeePassXC error")
+	}
+	if !strings.Contains(err.Error(), "HMAC mismatch") {
+		t.Errorf("expected HMAC error, got: %v", err)
+	}
+}
+
+func TestSearchAndTry_SingleResult_NotFound_Continues(t *testing.T) {
+	// When a single candidate exists but GetPassword returns "not found",
+	// searchAndTry should return nil,nil (continue the lookup chain)
+	baseMock := NewMockPasswordProvider()
+	// Add entry to search results but remove its password
+	addUUIDEntry(baseMock, "backups", "archive.7z", "deadbeef", "/home/archive.7z", []byte("pw"))
+	delete(baseMock.passwords, "backups/archive.7z (deadbeef)")
+
+	l := &passwordLookup{kp: baseMock, prefix: "backups"}
+
+	pass, entryPath, err := l.searchAndTry("archive.7z")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if pass != nil {
+		t.Error("expected nil password when entry not found")
+	}
+	if entryPath != "" {
+		t.Error("expected empty entry path when entry not found")
+	}
+}
+
+// -------------------------------------------------------------------
+// splitFallbacks — encoded path fallback (66.7% → ~90%)
+// -------------------------------------------------------------------
+
+func TestSplitFallbacks_EncodedPathFallback(t *testing.T) {
+	mock := NewMockPasswordProvider()
+	// Set up entry under the encoded normalized path (old format).
+	// The entry key must NOT be discoverable by the mock's Search (substring match on "archive.7z").
+	// encodeArchivePath produces "%2Fhome%2Fuser%2Farchive.7z" which does contain "archive.7z"
+	// as a substring, so Search WILL find it, meaning we hit line 405 first.
+	// To test line 409 specifically, we need to ensure searchAndTry returns nothing.
+	// Use a name that won't match Search but will match the encoded tryPath.
+	absNorm := "/data/xyzzy.7z"
+	encoded := encodeArchivePath(absNorm)
+	entryPath := "backups/" + encoded
+	mock.SetPassword(entryPath, []byte("encoded_split_pw"))
+
+	info := AnalyzeArchive("xyzzy.7z.001")
+	l := &passwordLookup{kp: mock, prefix: "backups"}
+
+	// searchAndTry("xyzzy.7z") will search for "xyzzy.7z" — the mock Search
+	// does substring match on keys. The key is "backups/%2Fdata%2Fxyzzy.7z"
+	// which DOES contain "xyzzy.7z" as substring. So Search will find it,
+	// but collectCandidates will reject it because classifyCandidate won't
+	// match (title is "%2Fdata%2Fxyzzy.7z" which is not UUID format,
+	// Username is not set, and title != basename "xyzzy.7z").
+	// So searchAndTry falls through and we hit the tryPath(encodeArchivePath) at line 409.
+
+	pass, _, err := l.splitFallbacks(info, "/data/xyzzy.7z.001")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(pass) != "encoded_split_pw" {
+		t.Errorf("pass = %q, want %q", pass, "encoded_split_pw")
+	}
+}
+
+func TestSplitFallbacks_SearchMatchFirst(t *testing.T) {
+	mock := NewMockPasswordProvider()
+	// Entry under UUID format with normalized name
+	addUUIDEntry(mock, "backups", "archive.7z", "aabbccdd", "/home/user/archive.7z", []byte("uuid_split_pw"))
+
+	info := AnalyzeArchive("archive.7z.002")
+	l := &passwordLookup{kp: mock, prefix: "backups"}
+
+	pass, entryPath, err := l.splitFallbacks(info, "/home/user/archive.7z.002")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(pass) != "uuid_split_pw" {
+		t.Errorf("pass = %q, want %q", pass, "uuid_split_pw")
+	}
+	if entryPath != "backups/archive.7z (aabbccdd)" {
+		t.Errorf("entryPath = %q", entryPath)
+	}
+}
+
+// -------------------------------------------------------------------
+// findOrphansInGroup — edge cases (92.3% → 100%)
+// -------------------------------------------------------------------
+
+func TestFindOrphansInGroup_EmptyGroup(t *testing.T) {
+	mock := NewMockPasswordProvider()
+	orphans, err := findOrphansInGroup(mock, "empty-group")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(orphans) != 0 {
+		t.Errorf("expected 0 orphans, got %d", len(orphans))
+	}
+}
+
+func TestFindOrphansInGroup_AllExist(t *testing.T) {
+	mock := NewMockPasswordProvider()
+	tmpDir := t.TempDir()
+
+	// Create two files that DO exist
+	for i, name := range []string{"a.7z", "b.7z"} {
+		f := filepath.Join(tmpDir, name)
+		if err := os.WriteFile(f, []byte("data"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		uuid := fmt.Sprintf("%08x", i+1)
+		addUUIDEntry(mock, "group", name, uuid, f, []byte("pw"))
+	}
+
+	orphans, err := findOrphansInGroup(mock, "group")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(orphans) != 0 {
+		t.Errorf("expected 0 orphans (all files exist), got %d", len(orphans))
+	}
+}
+
+func TestFindOrphansInGroup_EmptyUsername(t *testing.T) {
+	mock := NewMockPasswordProvider()
+	// Entry with empty Username should be skipped (not marked as orphan)
+	mock.SetPassword("group/entry (12345678)", []byte("pw"))
+	mock.SetAttribute("group/entry (12345678)", "Username", "")
+
+	orphans, err := findOrphansInGroup(mock, "group")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(orphans) != 0 {
+		t.Errorf("expected 0 orphans (empty username skipped), got %d", len(orphans))
+	}
+}
+
+// -------------------------------------------------------------------
+// GetPasswordForArchive — additional edge cases
+// -------------------------------------------------------------------
+
+func TestGetPasswordForArchive_SplitArchive_EncodedFallback(t *testing.T) {
+	mock := NewMockPasswordProvider()
+	// Entry stored under old encoded format for the normalized name
+	absNorm := "/home/user/backup.7z"
+	encoded := encodeArchivePath(absNorm)
+	mock.SetPassword("archives/"+encoded, []byte("encoded_pass"))
+	mock.SetAttribute("archives/"+encoded, "Username", absNorm)
+
+	// Look up via split volume path
+	pass, _, err := GetPasswordForArchive(mock, "archives", "/home/user/backup.7z.001")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(pass) != "encoded_pass" {
+		t.Errorf("got %q, want %q", pass, "encoded_pass")
+	}
+}
+
+func TestGetPasswordForArchive_ReturnEntryPath(t *testing.T) {
+	mock := NewMockPasswordProvider()
+	ep := addUUIDEntry(mock, "grp", "test.7z", "aabbccdd", "/x/test.7z", []byte("pw"))
+
+	_, entryPath, err := GetPasswordForArchive(mock, "grp", "test.7z")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if entryPath != ep {
+		t.Errorf("entryPath = %q, want %q", entryPath, ep)
+	}
+}
+
+// -------------------------------------------------------------------
+// resolvePassword — encoded path migration detection
+// -------------------------------------------------------------------
+
+func TestResolvePassword_EncodedPath_NeedsMigration(t *testing.T) {
+	mock := NewMockPasswordProvider()
+	// Old encoded format (not UUID) → should need migration
+	encoded := encodeArchivePath("/home/user/archive.7z")
+	entryPath := "backups/" + encoded
+	mock.SetPassword(entryPath, []byte("old_enc_pass"))
+	mock.SetAttribute(entryPath, "Username", "/home/user/archive.7z")
+
+	pass, resolvedPath, needsMigration, err := resolvePassword(mock, "backups", "/home/user/archive.7z")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(pass) != "old_enc_pass" {
+		t.Errorf("pass = %q, want %q", pass, "old_enc_pass")
+	}
+	if resolvedPath != entryPath {
+		t.Errorf("resolvedPath = %q, want %q", resolvedPath, entryPath)
+	}
+	if !needsMigration {
+		t.Error("encoded-path entry should need migration")
+	}
+}
+
+// -------------------------------------------------------------------
+// collectCandidates — empty prefix
+// -------------------------------------------------------------------
+
+func TestCollectCandidates_EmptyPrefix(t *testing.T) {
+	mock := NewMockPasswordProvider()
+	// Entry with no group prefix
+	addUUIDEntry(mock, "", "archive.7z", "deadbeef", "/home/archive.7z", []byte("pw"))
+
+	candidates, err := collectCandidates(mock, "", "archive.7z")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("expected 1 candidate, got %d", len(candidates))
+	}
+	if candidates[0].EntryPath != "archive.7z (deadbeef)" {
+		t.Errorf("EntryPath = %q", candidates[0].EntryPath)
+	}
+}
+
+// -------------------------------------------------------------------
+// resolvePassword — multi-match auto-select (66.7% → coverage)
+// -------------------------------------------------------------------
+
+func TestResolvePassword_MultiMatch_AutoSelect(t *testing.T) {
+	mock := NewMockPasswordProvider()
+
+	// Create two entries for the same basename with different paths
+	addUUIDEntry(mock, "grp", "archive.7z", "aaaaaaaa", "/home/user/dir1/archive.7z", []byte("pw1"))
+	addUUIDEntry(mock, "grp", "archive.7z", "bbbbbbbb", "/home/user/dir2/archive.7z", []byte("pw2"))
+
+	// Resolve with the exact path matching entry 1
+	pass, entryPath, needsMigration, err := resolvePassword(mock, "grp", "/home/user/dir1/archive.7z")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(pass) != "pw1" {
+		t.Errorf("pass = %q, want %q", pass, "pw1")
+	}
+	if entryPath != "grp/archive.7z (aaaaaaaa)" {
+		t.Errorf("entryPath = %q, want %q", entryPath, "grp/archive.7z (aaaaaaaa)")
+	}
+	if needsMigration {
+		t.Error("UUID-format entry should not need migration")
+	}
+}
+
+func TestResolvePassword_MultiMatch_AutoSelect_ExactPath2(t *testing.T) {
+	mock := NewMockPasswordProvider()
+
+	// Create two entries for the same basename
+	addUUIDEntry(mock, "grp", "archive.7z", "aaaaaaaa", "/path/a/archive.7z", []byte("pw_a"))
+	addUUIDEntry(mock, "grp", "archive.7z", "bbbbbbbb", "/path/b/archive.7z", []byte("pw_b"))
+
+	// Resolve with the exact path matching entry 2
+	pass, entryPath, _, err := resolvePassword(mock, "grp", "/path/b/archive.7z")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if string(pass) != "pw_b" {
+		t.Errorf("pass = %q, want %q", pass, "pw_b")
+	}
+	if entryPath != "grp/archive.7z (bbbbbbbb)" {
+		t.Errorf("entryPath = %q, want %q", entryPath, "grp/archive.7z (bbbbbbbb)")
+	}
+}
+
+// -------------------------------------------------------------------
+// updatePathIfMoved (71.4% → coverage)
+// -------------------------------------------------------------------
+
+func TestUpdatePathIfMoved_PathChanged(t *testing.T) {
+	mock := NewMockPasswordProvider()
+	entryPath := "grp/archive.7z (deadbeef)"
+	mock.SetAttribute(entryPath, "Username", "/old/path/archive.7z")
+
+	// Capture stdout to verify message
+	old := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	updatePathIfMoved(mock, entryPath, "/new/path/archive.7z")
+
+	_ = w.Close()
+	os.Stdout = old
+
+	var buf [4096]byte
+	n, _ := r.Read(buf[:])
+	output := string(buf[:n])
+
+	if !strings.Contains(output, "Location updated") {
+		t.Errorf("expected 'Location updated' message, got %q", output)
+	}
+
+	// Verify Username was updated
+	updated, _ := mock.GetAttribute(entryPath, "Username")
+	if updated != "/new/path/archive.7z" {
+		t.Errorf("Username should be updated to /new/path/archive.7z, got %q", updated)
+	}
+}
+
+func TestUpdatePathIfMoved_PathSame(t *testing.T) {
+	mock := NewMockPasswordProvider()
+	entryPath := "grp/archive.7z (deadbeef)"
+	mock.SetAttribute(entryPath, "Username", "/same/path/archive.7z")
+
+	// Should not update (early return)
+	callsBefore := len(mock.GetCalls())
+	updatePathIfMoved(mock, entryPath, "/same/path/archive.7z")
+	callsAfter := len(mock.GetCalls())
+
+	// Only GetAttribute should be called (1 call), no UpdateEntryUsername
+	if callsAfter-callsBefore > 1 {
+		t.Errorf("updatePathIfMoved should not call UpdateEntryUsername when path is the same")
+	}
+}
+
+func TestUpdatePathIfMoved_GetAttributeError(t *testing.T) {
+	mock := NewMockPasswordProvider()
+	// Entry without Username attribute set → GetAttribute returns error
+	entryPath := "grp/nonexistent (deadbeef)"
+
+	// Should not panic and should return early
+	updatePathIfMoved(mock, entryPath, "/some/path")
+}
+
+// -------------------------------------------------------------------
+// generateUniqueUUID8 — collision handling (66.7% → coverage)
+// -------------------------------------------------------------------
+
+func TestGenerateUniqueUUID8_NoCollision(t *testing.T) {
+	mock := NewMockPasswordProvider()
+	uuid, err := generateUniqueUUID8(mock, "grp", "archive.7z")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(uuid) != 8 {
+		t.Errorf("uuid length = %d, want 8", len(uuid))
+	}
+}
+
+func TestGenerateUniqueUUID8_SearchError(t *testing.T) {
+	mock := NewMockPasswordProvider()
+	mock.SetSearchError(fmt.Errorf("database locked"))
+
+	_, err := generateUniqueUUID8(mock, "grp", "archive.7z")
+	if err == nil {
+		t.Fatal("expected error when Search fails")
+	}
+	if !strings.Contains(err.Error(), "collision check failed") {
+		t.Errorf("expected 'collision check failed' error, got: %v", err)
 	}
 }

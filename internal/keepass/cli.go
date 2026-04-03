@@ -20,9 +20,23 @@ type Client struct {
 	passwordSet    bool
 }
 
-func New(dbPath string) *Client {
-	return &Client{
+type ClientOption func(*Client)
+
+func New(dbPath string, opts ...ClientOption) *Client {
+	c := &Client{
 		DatabasePath: dbPath,
+	}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c
+}
+
+// WithPassword allows pre-setting the master password during client creation.
+// Intended primarily for automation and integration testing.
+func WithPassword(password []byte) ClientOption {
+	return func(c *Client) {
+		c.SetMasterPassword(password)
 	}
 }
 
@@ -252,6 +266,14 @@ func (c *Client) EnsureUnlocked() error {
 	c.masterPassword = bytePassword // Already []byte, no conversion needed
 	c.passwordSet = true
 	return nil
+}
+
+// SetMasterPassword pre-sets the master password without interactive prompting.
+// Intended for integration tests and automation where stdin is not a terminal.
+func (c *Client) SetMasterPassword(password []byte) {
+	c.masterPassword = make([]byte, len(password))
+	copy(c.masterPassword, password)
+	c.passwordSet = true
 }
 
 // Mkdir creates a group if it doesn't exist (recursive)

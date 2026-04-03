@@ -53,7 +53,7 @@ func runAdd(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	kp := keepass.New(cfg.General.KdbxPath)
+	kp := keepass.New(cfg.General.KdbxPath, testClientOptions...)
 	defer kp.Close()
 
 	// Separate positional files from pass-through 7z flags

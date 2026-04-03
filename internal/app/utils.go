@@ -847,7 +847,7 @@ func withKeePassArchive(archivePath string, readOnly bool, op ArchiveOp) error {
 		return err
 	}
 
-	kp := keepass.New(cfg.General.KdbxPath)
+	kp := keepass.New(cfg.General.KdbxPath, testClientOptions...)
 	defer kp.Close()
 
 	fmt.Printf("Fetching password for '%s'...\n", archivePath)

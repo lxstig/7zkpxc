@@ -109,18 +109,20 @@ func runWithTimeoutInternal(ctx context.Context, binaryPath string, password []b
 // sevenZipExitCodeDesc returns a human-readable description for 7z exit codes.
 func sevenZipExitCodeDesc(code int) string {
 	switch code {
+	case 0:
+		return "No error"
 	case 1:
-		return "warning: non-fatal error"
+		return "Warning (Non fatal error(s)). For example, one or more files were locked by some other application, so they were not compressed."
 	case 2:
-		return "fatal error"
+		return "Fatal error"
 	case 7:
-		return "command line error"
+		return "Command line error"
 	case 8:
-		return "not enough memory"
+		return "Not enough memory for operation"
 	case 255:
-		return "user stopped the process"
+		return "User stopped the process"
 	default:
-		return "unknown error"
+		return "Unknown error"
 	}
 }
 

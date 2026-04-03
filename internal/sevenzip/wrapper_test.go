@@ -1,6 +1,7 @@
 package sevenzip
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -110,3 +111,137 @@ func TestRun_EncryptionDecryption(t *testing.T) {
 		t.Errorf("Extracted content mismatch. Want %q, got %q", content, extractedContent)
 	}
 }
+
+// -------------------------------------------------------------------
+// sevenZipExitCodeDesc
+// -------------------------------------------------------------------
+
+func TestSevenZipExitCodeDesc(t *testing.T) {
+	tests := []struct {
+		code int
+		want string
+	}{
+		{0, "No error"},
+		{1, "Warning (Non fatal error(s)). For example, one or more files were locked by some other application, so they were not compressed."},
+		{2, "Fatal error"},
+		{7, "Command line error"},
+		{8, "Not enough memory for operation"},
+		{255, "User stopped the process"},
+		{42, "Unknown error"},
+		{-1, "Unknown error"},
+	}
+
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("code_%d", tt.code), func(t *testing.T) {
+			got := sevenZipExitCodeDesc(tt.code)
+			if got != tt.want {
+				t.Errorf("sevenZipExitCodeDesc(%d) = %q, want %q", tt.code, got, tt.want)
+			}
+		})
+	}
+}
+
+// -------------------------------------------------------------------
+// VerifyPassword
+// -------------------------------------------------------------------
+
+func TestVerifyPassword_EncryptedArchive(t *testing.T) {
+	if _, err := exec.LookPath("7z"); err != nil {
+		t.Skip("7z not installed, skipping")
+	}
+
+	tmpDir := t.TempDir()
+	sourceFile := filepath.Join(tmpDir, "secret.txt")
+	archiveFile := filepath.Join(tmpDir, "encrypted.7z")
+	password := []byte("CorrectPassword123!")
+
+	if err := os.WriteFile(sourceFile, []byte("secret content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create encrypted archive
+	if err := Run("7z", password, []string{"a", archiveFile, sourceFile, "-p", "-mhe=on"}); err != nil {
+		t.Fatalf("Failed to create encrypted archive: %v", err)
+	}
+
+	// Correct password → MatchCorrect
+	match, err := VerifyPassword("7z", password, archiveFile)
+	if err != nil {
+		t.Fatalf("VerifyPassword with correct password failed: %v", err)
+	}
+	if match != MatchCorrect {
+		t.Errorf("expected MatchCorrect, got %v", match)
+	}
+}
+
+func TestVerifyPassword_WrongPassword(t *testing.T) {
+	if _, err := exec.LookPath("7z"); err != nil {
+		t.Skip("7z not installed, skipping")
+	}
+
+	tmpDir := t.TempDir()
+	sourceFile := filepath.Join(tmpDir, "secret.txt")
+	archiveFile := filepath.Join(tmpDir, "encrypted.7z")
+	password := []byte("CorrectPassword123!")
+
+	if err := os.WriteFile(sourceFile, []byte("secret content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Run("7z", password, []string{"a", archiveFile, sourceFile, "-p", "-mhe=on"}); err != nil {
+		t.Fatalf("Failed to create encrypted archive: %v", err)
+	}
+
+	// Wrong password → MatchFailed
+	match, err := VerifyPassword("7z", []byte("WrongPassword!"), archiveFile)
+	if match != MatchFailed {
+		t.Errorf("expected MatchFailed, got %v", match)
+	}
+	if err == nil {
+		t.Error("expected error for wrong password")
+	}
+}
+
+func TestVerifyPassword_UnencryptedArchive(t *testing.T) {
+	if _, err := exec.LookPath("7z"); err != nil {
+		t.Skip("7z not installed, skipping")
+	}
+
+	tmpDir := t.TempDir()
+	sourceFile := filepath.Join(tmpDir, "plain.txt")
+	archiveFile := filepath.Join(tmpDir, "unencrypted.7z")
+
+	if err := os.WriteFile(sourceFile, []byte("plain content"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create unencrypted archive (no -p flag)
+	cmd := exec.Command("7z", "a", archiveFile, sourceFile)
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("Failed to create unencrypted archive: %v", err)
+	}
+
+	// Any password against unencrypted archive → MatchUnencrypted
+	match, err := VerifyPassword("7z", []byte("anything"), archiveFile)
+	if err != nil {
+		t.Fatalf("VerifyPassword on unencrypted archive failed: %v", err)
+	}
+	if match != MatchUnencrypted {
+		t.Errorf("expected MatchUnencrypted, got %v", match)
+	}
+}
+
+func TestVerifyPassword_NonexistentArchive(t *testing.T) {
+	if _, err := exec.LookPath("7z"); err != nil {
+		t.Skip("7z not installed, skipping")
+	}
+
+	match, err := VerifyPassword("7z", []byte("pass"), "/nonexistent/archive.7z")
+	if match != MatchFailed {
+		t.Errorf("expected MatchFailed for nonexistent file, got %v", match)
+	}
+	if err == nil {
+		t.Error("expected error for nonexistent archive")
+	}
+}
+

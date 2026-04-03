@@ -98,3 +98,60 @@ func TestRemoveAllSplitVolumes_RarOld(t *testing.T) {
 		}
 	}
 }
+
+func TestRemoveAllSplitVolumes_NonSplitFallback(t *testing.T) {
+	// When a non-split archive is passed to removeAllSplitVolumes,
+	// it should fall through to removeSingleFile via the default case.
+	tmpDir := t.TempDir()
+	f := filepath.Join(tmpDir, "standard.7z")
+	if err := os.WriteFile(f, []byte("archive"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// standard.7z is not a split archive — removeAllSplitVolumes should still delete it
+	removeAllSplitVolumes(f)
+
+	if _, err := os.Stat(f); !os.IsNotExist(err) {
+		t.Error("non-split archive should have been deleted via fallback")
+	}
+}
+
+func TestRemoveAllSplitVolumes_NoGlobMatches(t *testing.T) {
+	// Create a split archive file but no matching glob partners
+	tmpDir := t.TempDir()
+	f := filepath.Join(tmpDir, "lonely.7z.001")
+	if err := os.WriteFile(f, []byte("vol"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// This should find the glob match and delete the single file
+	removeAllSplitVolumes(f)
+
+	if _, err := os.Stat(f); !os.IsNotExist(err) {
+		t.Error("lonely split volume should have been deleted")
+	}
+}
+
+func TestRemoveSingleFile_ReadOnlyDir(t *testing.T) {
+	// Test that removeSingleFile handles permission errors gracefully (no panic)
+	tmpDir := t.TempDir()
+	f := filepath.Join(tmpDir, "protected.7z")
+	if err := os.WriteFile(f, []byte("data"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Make directory read-only so delete will fail
+	if err := os.Chmod(tmpDir, 0555); err != nil {
+		t.Skip("cannot set read-only directory permissions")
+	}
+	defer func() { _ = os.Chmod(tmpDir, 0755) }()
+
+	// Should not panic — just print a warning
+	removeSingleFile(f)
+
+	// File should still exist (delete failed)
+	if _, err := os.Stat(f); os.IsNotExist(err) {
+		t.Error("file should still exist when delete fails due to permissions")
+	}
+}
+

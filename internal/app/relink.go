@@ -68,7 +68,7 @@ func runRelink(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("cannot access '%s': %w", target, err)
 	}
 
-	kp := keepass.New(cfg.General.KdbxPath)
+	kp := keepass.New(cfg.General.KdbxPath, testClientOptions...)
 	defer kp.Close()
 
 	if info.IsDir() {
@@ -369,7 +369,7 @@ func findArchivesInDir(dir string) ([]string, error) {
 
 // removeEntry returns a new slice with the specified entry path removed.
 func removeEntry(entries []entryInfo, entryPath string) []entryInfo {
-	result := make([]entryInfo, 0, len(entries)-1)
+	result := make([]entryInfo, 0, len(entries))
 	for _, e := range entries {
 		if e.EntryPath != entryPath {
 			result = append(result, e)

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/lxstig/7zkpxc/internal/config"
+	"github.com/lxstig/7zkpxc/internal/keepass"
 	"github.com/spf13/cobra"
 )
 
@@ -16,6 +17,10 @@ var skipDependencyCheck = map[string]bool{
 	"completion": true,
 	"help":       true,
 }
+
+// testClientOptions allows integration tests to inject dependencies such as
+// pre-authenticated KeePass clients into the command runners cleanly.
+var testClientOptions []keepass.ClientOption
 
 // rootCmd represents the base command when called without any subcommands
 var rootCmd = &cobra.Command{
