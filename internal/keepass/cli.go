@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"golang.org/x/term"
 )
@@ -54,45 +55,7 @@ func (c *Client) getMasterPassword() []byte {
 }
 
 func (c *Client) runCmd(args ...string) ([]byte, error) {
-	for {
-		if err := c.EnsureUnlocked(); err != nil {
-			return nil, err
-		}
-
-		cmd := buildCmd(args...)
-		var outBuf bytes.Buffer
-		cmd.Stdout = &outBuf
-		cmd.Stderr = &outBuf
-
-		stdin, err := cmd.StdinPipe()
-		if err != nil {
-			return nil, err
-		}
-
-		if err := cmd.Start(); err != nil {
-			return nil, err
-		}
-
-		_, _ = stdin.Write(c.getMasterPassword())
-		_, _ = stdin.Write([]byte("\n"))
-		_ = stdin.Close()
-
-		err = cmd.Wait()
-		if err != nil {
-			errStr := outBuf.String()
-			// Check if the error is an incorrect master password
-			if strings.Contains(errStr, "Invalid credentials") || strings.Contains(errStr, "HMAC mismatch") {
-				fmt.Println("\033[31mError: Invalid KeePassXC master password. Please try again.\033[0m")
-				c.clearMasterPassword()
-				continue
-			}
-			return outBuf.Bytes(), err
-		}
-		return outBuf.Bytes(), nil
-	}
-}
-
-func (c *Client) runCmdQuiet(args ...string) ([]byte, error) {
+	lockRetries := 0
 	for {
 		if err := c.EnsureUnlocked(); err != nil {
 			return nil, err
@@ -119,29 +82,83 @@ func (c *Client) runCmdQuiet(args ...string) ([]byte, error) {
 
 		err = cmd.Wait()
 		if err != nil {
-			// keepassxc-cli prints the password prompt to stderr.
-			var actualErrLines []string
-			for _, line := range strings.Split(errBuf.String(), "\n") {
-				line = strings.TrimSpace(line)
-				if line == "" {
-					continue
-				}
-				if strings.HasSuffix(line, ":") && strings.Contains(line, filepath.Base(c.DatabasePath)) {
-					continue
-				}
-				if line == "No results for that search term." || line == "Entry not found." {
-					continue
-				}
-				actualErrLines = append(actualErrLines, line)
+			errStr := parseKeepassxcStderr(errBuf.String(), c.DatabasePath)
+
+			// Check if the error is an incorrect master password
+			if strings.Contains(errStr, "Invalid credentials") || strings.Contains(errStr, "HMAC mismatch") {
+				fmt.Println("\033[31mError: Invalid KeePassXC master password. Please try again.\033[0m")
+				c.clearMasterPassword()
+				lockRetries = 0
+				continue
 			}
 
-			actualErrStr := strings.Join(actualErrLines, "\n")
+			// Check for Database Lock
+			lowerErrStr := strings.ToLower(errStr)
+			if strings.Contains(lowerErrStr, "locked by") || strings.Contains(lowerErrStr, "lock file") || strings.Contains(lowerErrStr, "database is locked") {
+				if lockRetries < 3 {
+					lockRetries++
+					fmt.Printf("\033[33mWarning: KeePassXC database is locked by another process. Retrying in 2 seconds... (%d/3)\033[0m\n", lockRetries)
+					time.Sleep(2 * time.Second)
+					continue
+				}
+				return outBuf.Bytes(), fmt.Errorf("KeePassXC database is locked by another process (e.g., KeePassXC GUI or another 7zkpxc instance) and could not be accessed")
+			}
+
+			return outBuf.Bytes(), err
+		}
+		return outBuf.Bytes(), nil
+	}
+}
+
+func (c *Client) runCmdQuiet(args ...string) ([]byte, error) {
+	lockRetries := 0
+	for {
+		if err := c.EnsureUnlocked(); err != nil {
+			return nil, err
+		}
+
+		cmd := buildCmd(args...)
+		var outBuf bytes.Buffer
+		var errBuf bytes.Buffer
+		cmd.Stdout = &outBuf
+		cmd.Stderr = &errBuf
+
+		stdin, err := cmd.StdinPipe()
+		if err != nil {
+			return nil, err
+		}
+
+		if err := cmd.Start(); err != nil {
+			return nil, err
+		}
+
+		_, _ = stdin.Write(c.getMasterPassword())
+		_, _ = stdin.Write([]byte("\n"))
+		_ = stdin.Close()
+
+		err = cmd.Wait()
+		if err != nil {
+			actualErrStr := parseKeepassxcStderr(errBuf.String(), c.DatabasePath)
 
 			// Check if the error is an incorrect master password
 			if strings.Contains(actualErrStr, "Invalid credentials") || strings.Contains(actualErrStr, "HMAC mismatch") {
 				fmt.Println("\033[31mError: Invalid KeePassXC master password. Please try again.\033[0m")
 				c.clearMasterPassword()
+				lockRetries = 0
 				continue
+			}
+
+			// Check for Database Lock
+			lowerActualErrStr := strings.ToLower(actualErrStr)
+			if strings.Contains(lowerActualErrStr, "locked by") || strings.Contains(lowerActualErrStr, "lock file") || strings.Contains(lowerActualErrStr, "database is locked") {
+				if lockRetries < 3 {
+					lockRetries++
+					// Don't print in quiet mode ideally, but lock is a critical stall
+					fmt.Printf("\033[33mWarning: KeePassXC database is locked. Retrying in 2 seconds... (%d/3)\033[0m\n", lockRetries)
+					time.Sleep(2 * time.Second)
+					continue
+				}
+				return outBuf.Bytes(), fmt.Errorf("KeePassXC database is locked by another process (e.g., KeePassXC GUI or another 7zkpxc instance) and could not be accessed")
 			}
 
 			if actualErrStr != "" {
@@ -151,6 +168,27 @@ func (c *Client) runCmdQuiet(args ...string) ([]byte, error) {
 		}
 		return outBuf.Bytes(), nil
 	}
+}
+
+// parseKeepassxcStderr filters out common non-error chatter from keepassxc-cli stderr
+func parseKeepassxcStderr(errBuf string, dbPath string) string {
+	var actualErrLines []string
+	for _, line := range strings.Split(errBuf, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		// Skip prompt lines: "Enter password to unlock /path/to/test.kdbx:"
+		if strings.HasSuffix(line, ":") && strings.Contains(line, filepath.Base(dbPath)) {
+			continue
+		}
+		// Skip intentional search/lookup misses
+		if line == "No results for that search term." || line == "Entry not found." {
+			continue
+		}
+		actualErrLines = append(actualErrLines, line)
+	}
+	return strings.Join(actualErrLines, "\n")
 }
 
 // clearMasterPassword zeroes and drops the cached master password
@@ -321,8 +359,8 @@ func (c *Client) Search(query string) ([]string, error) {
 		line = strings.TrimSpace(line)
 		// Strip leading slash — keepassxc-cli ls/search sometimes emits absolute paths
 		line = strings.TrimPrefix(line, "/")
-		// keepassxc-cli search sometimes outputs "Database unlocked" or other info, filter them
-		if line != "" && !strings.Contains(strings.ToLower(line), "database") {
+		// keepassxc-cli search sometimes outputs "Database unlocked" or similar info, filter them safely
+		if line != "" && line != "Database unlocked" && line != "Database unlocked." {
 			results = append(results, line)
 		}
 	}
@@ -479,7 +517,7 @@ func (c *Client) ListEntries(group string) ([]string, error) {
 			continue
 		}
 		// Skip keepassxc-cli info lines
-		if strings.Contains(strings.ToLower(line), "database") {
+		if line == "Database unlocked" || line == "Database unlocked." {
 			continue
 		}
 		entries = append(entries, line)
