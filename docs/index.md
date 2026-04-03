@@ -14,8 +14,8 @@ image: https://opengraph.githubassets.com/1/lxstig/7zkpxc
 **Remember one master password. Protect unlimited archives.**
 
 [![GitHub](https://img.shields.io/github/stars/lxstig/7zkpxc?style=social)](https://github.com/lxstig/7zkpxc)
-[![AUR](https://img.shields.io/aur/version/7zkpxc)](https://aur.archlinux.org/packages/7zkpxc)
 [![Go Report Card](https://goreportcard.com/badge/github.com/lxstig/7zkpxc)](https://goreportcard.com/report/github.com/lxstig/7zkpxc)
+[![AUR](https://img.shields.io/aur/version/7zkpxc)](https://aur.archlinux.org/packages/7zkpxc)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 
 ---
@@ -50,15 +50,20 @@ image: https://opengraph.githubassets.com/1/lxstig/7zkpxc
 
 ---
 
-## Key Features
+## Features
 
-- **Unique passwords per archive** — 64-character cryptographically random, generated fresh every time
-- **KeePassXC as your vault** — passwords stored and retrieved from your `.kdbx` database automatically
-- **Zero shell leakage** — passwords piped to 7-Zip via PTY, nothing in `ps aux` or history
-- **Memory safety** — secrets zeroed in memory immediately after use
-- **Smart relinking** — metadata-driven recovery for renamed/moved archives with size pre-filtering
-- **Split volume support** — automatically resolves passwords for multi-part archives
-- **Full 7-Zip feature set** — create, extract, list, update, delete, rename, test, move, remove
+- **Unique passwords per archive** 64-character cryptographically random, generated fresh every time.
+- **KeePassXC as your vault** Passwords are stored and retrieved from your `.kdbx` database automatically.
+- **Zero shell leakage** Passwords are piped to 7-Zip via PTY. Nothing in `ps aux`, nothing in history.
+- **Memory safety** Secrets are zeroed in memory immediately after use.
+- **Metadata-driven relinking** File-size fingerprints stored in KeePass Notes enable fast recovery of renamed/moved archives.
+- **Split volume support** Automatically resolves passwords for split archives (`.7z.001`, `.part001.rar`, etc.).
+- **Rename/move support** `7zkpxc mv` moves the file on disk and updates the KeePassXC entry.
+- **Relink command** `7zkpxc relink` finds the correct entry for an archive by brute-forcing passwords with size pre-filtering.
+- **Cloud-ready** Encrypt locally, upload anywhere. Only you (with your KeePassXC database) can decrypt.
+- **Dependency checking** Tells you exactly what's missing before doing anything.
+- **Tab-completing init** Interactive setup with real filesystem tab completion.
+- **Shell completions** Native Zsh, Bash, and Fish autocomplete.
 
 ## Commands
 
@@ -79,11 +84,9 @@ image: https://opengraph.githubassets.com/1/lxstig/7zkpxc
 
 ## Install
 
-### Arch Linux (AUR)
+### Pre-built Binaries
 
-```bash
-yay -S 7zkpxc
-```
+Available on the [Releases](https://github.com/lxstig/7zkpxc/releases) page.
 
 ### From Source
 
@@ -94,9 +97,11 @@ make build
 sudo make install
 ```
 
-### Pre-built Binaries
+### Arch Linux (AUR)
 
-Available on the [Releases](https://github.com/lxstig/7zkpxc/releases) page.
+```bash
+yay -S 7zkpxc
+```
 
 ## Security Model
 
@@ -107,25 +112,6 @@ Available on the [Releases](https://github.com/lxstig/7zkpxc/releases) page.
 | Weak / reused passwords | Every archive gets a unique 64-char random password |
 | Memory forensics | Secrets zeroed after use |
 | Credential sprawl | Single KeePassXC database holds all archive passwords |
-
-## How It Works
-
-```
-  ┌──────────┐       ┌───────────┐       ┌─────────┐
-  │  7zkpxc  │ ─────▶│ KeePassXC │       │  7-Zip  │
-  │          │ ◀─────│           │       │         │
-  └────┬─────┘       └───────────┘       └────▲────┘
-       │                                      │
-       │           password via PTY           │
-       └──────────────────────────────────────┘
-```
-
-1. **Create** — generates password → saves to KeePassXC → pipes to 7z via PTY → zeroes memory
-2. **Extract/List** — looks up password in KeePassXC → pipes to 7z
-3. **Move** — renames file on disk → atomically updates KeePassXC entry
-4. **Relink** — size-filters entries → tests passwords → relinks matched entry
-
-Every operation stores file-size metadata in the KeePass entry's Notes, enabling O(1) pre-filtering during relinking.
 
 ---
 

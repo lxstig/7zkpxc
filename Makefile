@@ -23,6 +23,12 @@ CONFIG_DIR ?= $(REAL_HOME)/.config/$(BINARY_NAME)
 all: build
 
 build:
+	@if ! command -v go >/dev/null 2>&1; then \
+		echo "Error: 'go' command not found! You must install Go to build from source."; \
+		echo "If you are not a developer, it is recommended to download the pre-built binaries"; \
+		echo "from the GitHub Releases page or use the automated install script: ./install.sh"; \
+		exit 1; \
+	fi
 	@echo "Building $(BINARY_NAME) $(VERSION)..."
 	@mkdir -p $(BUILD_DIR)
 	@go build -ldflags '$(LDFLAGS)' -o $(BUILD_DIR)/$(BINARY_NAME) ./cmd/7zkpxc

@@ -198,6 +198,11 @@ func processOutput(ptmx *os.File, password []byte, passwordSent chan<- struct{},
 				if !silent {
 					_, _ = os.Stdout.Write(chunk)
 				}
+
+				// Introduce a tiny delay so the OS PTY layer has time to apply tcsetattr (echo off).
+				// Heavily-loaded CI runners may drop or garble prompt bytes if written instantly.
+				time.Sleep(50 * time.Millisecond)
+
 				_, _ = ptmx.Write(password)
 				_, _ = ptmx.Write([]byte("\n"))
 				suppressUntilNewline = true

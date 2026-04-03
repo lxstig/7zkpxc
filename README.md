@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/lxstig/7zkpxc/actions/workflows/ci.yml/badge.svg)](https://github.com/lxstig/7zkpxc/actions/workflows/ci.yml)
 [![Go Report Card](https://goreportcard.com/badge/github.com/lxstig/7zkpxc)](https://goreportcard.com/report/github.com/lxstig/7zkpxc)
+[![AUR](https://img.shields.io/aur/version/7zkpxc)](https://aur.archlinux.org/packages/7zkpxc)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 
 **7zkpxc** is a security-focused CLI tool that bridges [7-Zip](https://7-zip.org/) and [KeePassXC](https://keepassxc.org/). It generates a unique, cryptographically strong password for every archive you create, securely stores it in your KeePassXC database and automatically retrieves it when you need to extract/list the archive, all without the password ever touching your shell history, process list, or clipboard.
@@ -42,20 +43,50 @@ Encrypting files with 7-Zip is common practice before uploading to cloud storage
 
 Every archive gets its own unique password. You never see it, never type it, never reuse it. Your KeePassXC database is the single source of truth, protected by your master password, your key file, or your hardware key.
 
-## Features
+## Installation
 
-- **Unique passwords per archive** 64-character cryptographically random, generated fresh every time.
-- **KeePassXC as your vault** Passwords are stored and retrieved from your `.kdbx` database automatically.
-- **Zero shell leakage** Passwords are piped to 7-Zip via PTY. Nothing in `ps aux`, nothing in history.
-- **Memory safety** Secrets are zeroed in memory immediately after use.
-- **Metadata-driven relinking** File-size fingerprints stored in KeePass Notes enable fast recovery of renamed/moved archives.
-- **Split volume support** Automatically resolves passwords for split archives (`.7z.001`, `.part001.rar`, etc.).
-- **Rename/move support** `7zkpxc mv` moves the file on disk and updates the KeePassXC entry.
-- **Relink command** `7zkpxc relink` finds the correct entry for an archive by brute-forcing passwords with size pre-filtering.
-- **Cloud-ready** Encrypt locally, upload anywhere. Only you (with your KeePassXC database) can decrypt.
-- **Dependency checking** Tells you exactly what's missing before doing anything.
-- **Tab-completing init** Interactive setup with real filesystem tab completion.
-- **Shell completions** Native Zsh, Bash, and Fish autocomplete.
+### Automated Install (Recommended)
+
+You can install the latest pre-built binary dynamically with installer:
+```bash
+curl -sSL https://raw.githubusercontent.com/lxstig/7zkpxc/main/install.sh | bash
+```
+
+### From Releases
+
+Pre-built binaries for Linux and macOS are available on the [Releases](https://github.com/lxstig/7zkpxc/releases) page.
+
+### From Source
+
+```bash
+git clone https://github.com/lxstig/7zkpxc.git
+cd 7zkpxc
+make build
+sudo make install
+```
+
+> **Note:** Always `make build` as your normal user first. `sudo make install` only copies the binary and completions, it does not rebuild.
+
+### Arch Linux (AUR)
+
+```bash
+# Using an AUR helper (recommended)
+yay -S 7zkpxc
+# or
+paru -S 7zkpxc
+
+# Manual installation
+git clone https://aur.archlinux.org/7zkpxc.git
+cd 7zkpxc
+makepkg -si
+```
+
+### Uninstall
+
+```bash
+sudo make uninstall          # Removes binary + completions (keeps config)
+sudo make purge              # Removes everything including ~/.config/7zkpxc
+```
 
 ## Security Model
 
@@ -81,44 +112,6 @@ Every archive gets its own unique password. You never see it, never type it, nev
 |-----------|-------------|---------|
 | [**7-Zip**](https://7-zip.org/) (`7z`) | Creates and extracts encrypted archives | Arch: `sudo pacman -S 7zip`<br>Debian/Ubuntu: `sudo apt install p7zip-full` |
 | [**KeePassXC**](https://keepassxc.org/) (`keepassxc-cli`) | Stores and retrieves archive passwords | Arch: `sudo pacman -S keepassxc`<br>Debian/Ubuntu: `sudo apt install keepassxc` |
-
-## Installation
-
-### Arch Linux (AUR)
-
-```bash
-# Using an AUR helper (recommended)
-yay -S 7zkpxc
-# or
-paru -S 7zkpxc
-
-# Manual installation
-git clone https://aur.archlinux.org/7zkpxc.git
-cd 7zkpxc
-makepkg -si
-```
-
-### From Source
-
-```bash
-git clone https://github.com/lxstig/7zkpxc.git
-cd 7zkpxc
-make build
-sudo make install
-```
-
-> **Note:** Always `make build` as your normal user first. `sudo make install` only copies the binary and completions, it does not rebuild.
-
-### From Releases
-
-Pre-built binaries for Linux and macOS are available on the [Releases](https://github.com/lxstig/7zkpxc/releases) page.
-
-### Uninstall
-
-```bash
-sudo make uninstall          # Removes binary + completions (keeps config)
-sudo make purge              # Removes everything including ~/.config/7zkpxc
-```
 
 ## Quick Start
 
@@ -213,46 +206,6 @@ Override any value via environment variables with the `7ZKPXC_` prefix:
 # Use the `env` command as a workaround:
 env 7ZKPXC_GENERAL_KDBX_PATH="/other/db.kdbx" 7zkpxc a archive.7z files/
 ```
-
-## How It Works
-
-```
-  ┌──────────┐       ┌───────────┐       ┌─────────┐
-  │  7zkpxc  │─────▶│ KeePassXC │       │  7-Zip  │
-  │          │◀─────│           │       │         │
-  └────┬─────┘       └───────────┘       └────▲────┘
-       │                                      │
-       │           password via PTY           │
-       └──────────────────────────────────────┘
-```
-
-**Creating an archive (`a`):**
-1. Generates a 64-character random password.
-2. Saves it as a new entry in your KeePassXC database.
-3. Spawns the configured 7-Zip binary (`7zz`, `7z`, etc.) in a PTY and pipes the password when prompted.
-4. Zeroes the password from memory.
-
-**Extracting or listing (`x`, `e`, `l`):**
-1. Looks up the password in KeePassXC using a smart fallback chain:
-   - Exact path match (fastest)
-   - Normalized name for split archives (`archive.7z.001` → `archive.7z`)
-   - Global search by filename (handles moved archives)
-2. Pipes the password to 7-Zip via PTY.
-
-**Renaming or moving (`mv`):**
-1. Looks up the existing KeePassXC entry.
-2. Moves the archive file on disk (`os.Rename`).
-3. Creates a new KeePassXC entry for the new path.
-4. Deletes the old entry.
-5. If step 3 fails, the file move is automatically rolled back.
-
-**Relinking (`relink`):**
-1. Collects all entries from the KeePassXC group with their stored metadata.
-2. Partitions entries by file size: exact matches → no metadata → size mismatches.
-3. Tests each entry's password against the archive using `VerifyPassword` (phases run in order).
-4. On match, atomically updates the entry title and path.
-
-> **Note:** Every successful archive operation automatically stores a `[7zkpxc]` metadata section in the KeePass entry's Notes field (file size + version). This enables the size pre-filter in `relink`, reducing password verification attempts from O(entries) to O(1) in the common case.
 
 ## Credits
 

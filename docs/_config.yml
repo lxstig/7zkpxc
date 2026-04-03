@@ -20,7 +20,7 @@ social:
     - "https://aur.archlinux.org/packages/7zkpxc"
 
 google_analytics:
-
+google_site_verification: m7jfoslA6YFPMjvJ4Lu2oL1ZrmRtDZKMgkT-6MqxMFY
 defaults:
   - scope:
       path: ""
