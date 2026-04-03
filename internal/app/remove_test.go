@@ -154,4 +154,3 @@ func TestRemoveSingleFile_ReadOnlyDir(t *testing.T) {
 		t.Error("file should still exist when delete fails due to permissions")
 	}
 }
-

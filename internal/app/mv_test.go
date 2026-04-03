@@ -237,4 +237,3 @@ func TestMoveFileCopy_PreservesPermissions(t *testing.T) {
 		t.Errorf("permissions not preserved: got %v, want %v", dstInfo.Mode(), srcInfo.Mode())
 	}
 }
-

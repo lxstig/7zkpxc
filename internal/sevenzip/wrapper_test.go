@@ -244,4 +244,3 @@ func TestVerifyPassword_NonexistentArchive(t *testing.T) {
 		t.Error("expected error for nonexistent archive")
 	}
 }
-

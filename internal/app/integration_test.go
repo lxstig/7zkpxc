@@ -302,7 +302,6 @@ func TestRunList_ArchiveNotFound(t *testing.T) {
 // withKeePassArchive config loading is tested indirectly through the command
 // runner tests above (runExtract_MissingConfig, etc.)
 
-
 // -------------------------------------------------------------------
 // performHousekeeping — pure logic (0% → coverage)
 // -------------------------------------------------------------------

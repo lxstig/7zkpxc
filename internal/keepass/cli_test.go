@@ -407,4 +407,3 @@ func TestEnsureUnlocked_AlreadyUnlocked(t *testing.T) {
 		t.Errorf("EnsureUnlocked should return nil when already unlocked, got: %v", err)
 	}
 }
-

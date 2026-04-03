@@ -552,4 +552,3 @@ func TestSaveConfigWithComments(t *testing.T) {
 		t.Errorf("config file permissions = %v, want 0600", info.Mode().Perm())
 	}
 }
-

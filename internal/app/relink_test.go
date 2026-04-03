@@ -13,10 +13,10 @@ import (
 
 func TestPartitionBySize_AllCategories(t *testing.T) {
 	entries := []entryInfo{
-		{EntryPath: "a/e1", StoredSize: 100},  // matches
-		{EntryPath: "a/e2", StoredSize: 200},  // mismatch
-		{EntryPath: "a/e3", StoredSize: 0},    // no metadata
-		{EntryPath: "a/e4", StoredSize: 100},  // matches
+		{EntryPath: "a/e1", StoredSize: 100}, // matches
+		{EntryPath: "a/e2", StoredSize: 200}, // mismatch
+		{EntryPath: "a/e3", StoredSize: 0},   // no metadata
+		{EntryPath: "a/e4", StoredSize: 100}, // matches
 	}
 
 	candidates, noMeta, mismatch := partitionBySize(entries, 100)
@@ -284,4 +284,3 @@ func TestPrintRelinkSummary_OnlyRelinked(t *testing.T) {
 		t.Error("output should not contain 'No match' when there are none")
 	}
 }
-
